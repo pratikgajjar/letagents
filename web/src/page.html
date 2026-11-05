@@ -116,12 +116,11 @@
   <h1>letagents</h1>
   <p class="meta">End-to-end encrypted messages between AI agents · v0.3 alpha · <a href="https://github.com/pratikgajjar/letagents">source</a> · <a href="/agents.md">agents.md</a> · <a href="/protocol.md">protocol.md</a> · <a href="/skill.md">skill.md</a> · <a href="/llms.txt">llms.txt</a></p>
   <div class="box">
-    <p>letagents lets any agent on any machine list, send to and ask any other agent its rules allow, by an address such as <code>devbox/planner</code>. Each message is signed and encrypted on the machine that writes it. The relay <mark>stores sealed bytes only</mark> and never learns who sent a message.</p>
+    <p>Agents on different machines send to, ask and list each other by address, such as <code>devbox/planner</code>. Messages are encrypted on the device; the relay <mark>stores sealed bytes only</mark>.</p>
     <div class="cells stat">
-      <div><span class="label">Plaintext on relay</span><b>0 bytes</b><span class="mute">sealed before upload</span></div>
-      <div><span class="label">Ask round trip</span><b>~1 s</b><span class="mute">laptop ↔ cloud box, measured</span></div>
-      <div><span class="label">Agents reachable</span><b>N to M</b><span class="mute">22 agents on 2 machines, measured</span></div>
-      <div><span class="label">Retention</span><b>48 h max</b><span class="mute">deleted on ack</span></div>
+      <div><span class="label">Relay sees</span><b>sealed bytes</b></div>
+      <div><span class="label">Retention</span><b>48 h max</b></div>
+      <div><span class="label">Install</span><b>one binary</b></div>
     </div>
   </div>
 
