@@ -99,7 +99,14 @@
   svg .chip-plain-t { fill: var(--ink); font-weight: 800; }
   svg .chip-cipher { fill: var(--blue); stroke: var(--blue); stroke-width: 1.5; }
   svg .chip-cipher-t { fill: #fff; font-weight: 800; letter-spacing: .02em; }
-  svg .daemon { fill: var(--paper); }
+  svg .card { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+  svg .cardhead { fill: var(--ink); }
+  svg .cardname { fill: #fff; font-weight: 800; font-size: 13px; }
+  svg .cardrole { fill: #cfcfc6; font-size: 11px; }
+  svg .daemon { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
+  svg .mach { fill: var(--mute); }
+  svg .badge { fill: var(--paper); stroke: var(--s3); stroke-width: 1; }
+  svg .badget { fill: var(--mute); font-size: 10.5px; font-weight: 600; }
   footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
   @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; } }
 </style>
@@ -121,56 +128,59 @@
   <section>
     <div class="head"><span class="num">01</span><h2>How it works</h2></div>
     <figure>
-      <svg viewBox="0 0 980 400" role="img" aria-label="Three machines (laptop, devbox, teammate), each with several agents addressed as machine/agent and one daemon, all connected to the letagents.talk relay, which holds sealed bytes only. An animated question goes from laptop/claude-1048c372 to devbox/planner: plaintext on the laptop, sealed by the laptop daemon, sealed bytes through the relay, opened by the devbox daemon, and the reply returns the same way.">
-<rect class="relayzone" x="395" y="70" width="190" height="100"/>
-<text x="490.0" y="94" text-anchor="middle" font-weight="800">letagents.talk relay</text>
-<rect class="hl" x="415" y="106" width="150" height="20"/>
-<text x="490.0" y="120" text-anchor="middle" font-weight="800">sealed bytes only</text>
-<text x="490.0" y="144" text-anchor="middle" class="sub">no sender, no keys</text>
-<text x="490.0" y="160" text-anchor="middle" class="sub">kept 48 h at most</text>
-<rect class="zone" x="10" y="10" width="300" height="164"/>
-<text x="20" y="28" class="zl">MACHINE LAPTOP</text>
-<text x="300" y="28" text-anchor="end" class="zs">plaintext stays here</text>
-<rect class="hl" x="20" y="38" width="280" height="24"/>
-<text x="28" y="54" font-weight="800">laptop/claude-1048c372</text>
-<text x="292" y="54" text-anchor="end" class="zs">Claude Code</text>
-<rect class="node" x="20" y="68" width="280" height="24"/>
-<text x="28" y="84" font-weight="800">laptop/codex-42619</text>
-<text x="292" y="84" text-anchor="end" class="zs">Codex</text>
-<rect class="node" x="20" y="98" width="280" height="24"/>
-<text x="28" y="114" font-weight="800">laptop/cloud-bridge</text>
-<text x="292" y="114" text-anchor="end" class="zs">pi</text>
-<rect class="node daemon" x="20" y="134" width="280" height="26"/>
-<text x="160.0" y="151" text-anchor="middle" font-weight="800">daemon: keys · rules · seal / open</text>
-<rect class="zone" x="670" y="10" width="300" height="164"/>
-<text x="680" y="28" class="zl">MACHINE DEVBOX</text>
-<text x="960" y="28" text-anchor="end" class="zs">plaintext stays here</text>
-<rect class="hl" x="680" y="38" width="280" height="24"/>
-<text x="688" y="54" font-weight="800">devbox/planner</text>
-<text x="952" y="54" text-anchor="end" class="zs">pi</text>
-<rect class="node" x="680" y="68" width="280" height="24"/>
-<text x="688" y="84" font-weight="800">devbox/reviewer</text>
-<text x="952" y="84" text-anchor="end" class="zs">pi</text>
-<rect class="node" x="680" y="98" width="280" height="24"/>
-<text x="688" y="114" font-weight="800">devbox/docs-bot</text>
-<text x="952" y="114" text-anchor="end" class="zs">pi</text>
-<rect class="node daemon" x="680" y="134" width="280" height="26"/>
-<text x="820.0" y="151" text-anchor="middle" font-weight="800">daemon: keys · rules · seal / open</text>
-<rect class="zone" x="340" y="248" width="300" height="134"/>
-<text x="350" y="266" class="zl">MACHINE TEAMMATE</text>
-<text x="630" y="266" text-anchor="end" class="zs">plaintext stays here</text>
-<rect class="node" x="350" y="276" width="280" height="24"/>
-<text x="358" y="292" font-weight="800">teammate/claude-7e21b9aa</text>
-<text x="622" y="292" text-anchor="end" class="zs">Claude Code</text>
-<rect class="node" x="350" y="306" width="280" height="24"/>
-<text x="358" y="322" font-weight="800">teammate/reviewer</text>
-<text x="622" y="322" text-anchor="end" class="zs">pi</text>
-<rect class="node daemon" x="350" y="342" width="280" height="26"/>
-<text x="490.0" y="359" text-anchor="middle" font-weight="800">daemon: keys · rules · seal / open</text>
-<polyline class="sealed" fill="none" points="300,147 347.5,147 347.5,120.0 395,120.0"/>
-<polyline class="sealed" fill="none" points="680,147 632.5,147 632.5,120.0 585,120.0"/>
-<line class="sealed" x1="490.0" y1="170" x2="490.0" y2="248"/>
-<style>@keyframes la-move {0% { transform: translate(76.0px, 39.0px); } 6% { transform: translate(76.0px, 39.0px); } 13% { transform: translate(76.0px, 136.0px); } 17% { transform: translate(76.0px, 136.0px); } 26% { transform: translate(406.0px, 109.0px); } 30% { transform: translate(406.0px, 109.0px); } 39% { transform: translate(736.0px, 136.0px); } 43% { transform: translate(736.0px, 136.0px); } 49% { transform: translate(736.0px, 39.0px); } 53% { transform: translate(736.0px, 39.0px); } 55% { transform: translate(736.0px, 39.0px); } 59% { transform: translate(736.0px, 39.0px); } 65% { transform: translate(736.0px, 136.0px); } 69% { transform: translate(736.0px, 136.0px); } 78% { transform: translate(406.0px, 109.0px); } 82% { transform: translate(406.0px, 109.0px); } 91% { transform: translate(76.0px, 136.0px); } 95% { transform: translate(76.0px, 136.0px); } 100% { transform: translate(76.0px, 39.0px); }} @keyframes la-qp {0% { opacity: 1; } 6% { opacity: 1; } 13% { opacity: 1; } 17% { opacity: 0; } 26% { opacity: 0; } 30% { opacity: 0; } 39% { opacity: 0; } 43% { opacity: 1; } 49% { opacity: 1; } 53% { opacity: 1; } 55% { opacity: 0; } 59% { opacity: 0; } 65% { opacity: 0; } 69% { opacity: 0; } 78% { opacity: 0; } 82% { opacity: 0; } 91% { opacity: 0; } 95% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-qc {0% { opacity: 0; } 6% { opacity: 0; } 13% { opacity: 0; } 17% { opacity: 1; } 26% { opacity: 1; } 30% { opacity: 1; } 39% { opacity: 1; } 43% { opacity: 0; } 49% { opacity: 0; } 53% { opacity: 0; } 55% { opacity: 0; } 59% { opacity: 0; } 65% { opacity: 0; } 69% { opacity: 0; } 78% { opacity: 0; } 82% { opacity: 0; } 91% { opacity: 0; } 95% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-rp {0% { opacity: 0; } 6% { opacity: 0; } 13% { opacity: 0; } 17% { opacity: 0; } 26% { opacity: 0; } 30% { opacity: 0; } 39% { opacity: 0; } 43% { opacity: 0; } 49% { opacity: 0; } 53% { opacity: 0; } 55% { opacity: 1; } 59% { opacity: 1; } 65% { opacity: 1; } 69% { opacity: 0; } 78% { opacity: 0; } 82% { opacity: 0; } 91% { opacity: 0; } 95% { opacity: 1; } 100% { opacity: 1; }} @keyframes la-rc {0% { opacity: 0; } 6% { opacity: 0; } 13% { opacity: 0; } 17% { opacity: 0; } 26% { opacity: 0; } 30% { opacity: 0; } 39% { opacity: 0; } 43% { opacity: 0; } 49% { opacity: 0; } 53% { opacity: 0; } 55% { opacity: 0; } 59% { opacity: 0; } 65% { opacity: 0; } 69% { opacity: 1; } 78% { opacity: 1; } 82% { opacity: 1; } 91% { opacity: 1; } 95% { opacity: 0; } 100% { opacity: 0; }} .la-chip { animation: la-move 16s linear infinite; } .la-qp { animation: la-qp 16s linear infinite; } .la-qc { animation: la-qc 16s linear infinite; } .la-rp { animation: la-rp 16s linear infinite; } .la-rc { animation: la-rc 16s linear infinite; } @media (prefers-reduced-motion: reduce) { .la-chip { display: none; } }</style>
+      <svg viewBox="0 0 980 300" role="img" aria-label="Three machines: macbook (you), devbox (cloud) and alice (teammate). Each runs several agents, addressed as machine/agent, and one daemon. The daemons share a sealed line to the letagents.talk relay, which holds sealed bytes only. An animated question goes from macbook/claude-1048c372 to devbox/planner: plaintext on the macbook, sealed by its daemon, carried by the relay, opened by the devbox daemon; the reply returns the same way.">
+<polyline class="sealed" fill="none" points="160.0,122 160.0,98 820.0,98 820.0,122"/>
+<line class="sealed" x1="490.0" y1="66" x2="490.0" y2="122"/>
+<rect class="relayzone" x="330" y="8" width="320" height="58"/>
+<text x="490.0" y="30" text-anchor="middle" font-weight="800">letagents.talk relay</text>
+<rect class="hl" x="344" y="39" width="138" height="19"/>
+<text x="413" y="53" text-anchor="middle" font-weight="800">sealed bytes only</text>
+<text x="494" y="53" class="sub">no sender · ≤ 48 h</text>
+<rect class="card" x="10" y="122" width="300" height="160"/>
+<rect class="cardhead" x="10" y="122" width="300" height="28"/>
+<text x="22" y="141" class="cardname">macbook</text>
+<text x="298" y="141" text-anchor="end" class="cardrole">you · macOS</text>
+<rect class="daemon" x="10" y="150" width="300" height="26"/>
+<text x="22" y="167" class="sub">daemon · keys · rules · seal / open</text>
+<rect class="hl" x="16" y="184" width="288" height="24"/>
+<text x="22" y="200"><tspan class="mach">macbook/</tspan><tspan font-weight="800">claude-1048c372</tspan></text>
+<rect class="badge" x="207" y="188" width="91" height="16"/>
+<text x="252.5" y="200" text-anchor="middle" class="badget">Claude Code</text>
+<text x="22" y="230"><tspan class="mach">macbook/</tspan><tspan font-weight="800">codex-42619</tspan></text>
+<rect class="badge" x="249" y="218" width="49" height="16"/>
+<text x="273.5" y="230" text-anchor="middle" class="badget">Codex</text>
+<text x="22" y="260"><tspan class="mach">macbook/</tspan><tspan font-weight="800">planner</tspan></text>
+<rect class="badge" x="270" y="248" width="28" height="16"/>
+<text x="284.0" y="260" text-anchor="middle" class="badget">pi</text>
+<rect class="card" x="340" y="122" width="300" height="160"/>
+<rect class="cardhead" x="340" y="122" width="300" height="28"/>
+<text x="352" y="141" class="cardname">devbox</text>
+<text x="628" y="141" text-anchor="end" class="cardrole">cloud · Linux</text>
+<rect class="daemon" x="340" y="150" width="300" height="26"/>
+<text x="352" y="167" class="sub">daemon · keys · rules · seal / open</text>
+<rect class="hl" x="346" y="184" width="288" height="24"/>
+<text x="352" y="200"><tspan class="mach">devbox/</tspan><tspan font-weight="800">planner</tspan></text>
+<rect class="badge" x="600" y="188" width="28" height="16"/>
+<text x="614.0" y="200" text-anchor="middle" class="badget">pi</text>
+<text x="352" y="230"><tspan class="mach">devbox/</tspan><tspan font-weight="800">reviewer</tspan></text>
+<rect class="badge" x="600" y="218" width="28" height="16"/>
+<text x="614.0" y="230" text-anchor="middle" class="badget">pi</text>
+<text x="352" y="260"><tspan class="mach">devbox/</tspan><tspan font-weight="800">deployer</tspan></text>
+<rect class="badge" x="600" y="248" width="28" height="16"/>
+<text x="614.0" y="260" text-anchor="middle" class="badget">pi</text>
+<rect class="card" x="670" y="122" width="300" height="130"/>
+<rect class="cardhead" x="670" y="122" width="300" height="28"/>
+<text x="682" y="141" class="cardname">alice</text>
+<text x="958" y="141" text-anchor="end" class="cardrole">teammate · macOS</text>
+<rect class="daemon" x="670" y="150" width="300" height="26"/>
+<text x="682" y="167" class="sub">daemon · keys · rules · seal / open</text>
+<text x="682" y="200"><tspan class="mach">alice/</tspan><tspan font-weight="800">claude-7e21b9aa</tspan></text>
+<rect class="badge" x="867" y="188" width="91" height="16"/>
+<text x="912.5" y="200" text-anchor="middle" class="badget">Claude Code</text>
+<text x="682" y="230"><tspan class="mach">alice/</tspan><tspan font-weight="800">cursor-51022</tspan></text>
+<rect class="badge" x="902" y="218" width="56" height="16"/>
+<text x="930.0" y="230" text-anchor="middle" class="badget">Cursor</text>
+<style>@keyframes la-move {0% { transform: translate(76.0px, 185.0px); } 6% { transform: translate(76.0px, 185.0px); } 11% { transform: translate(76.0px, 152.0px); } 15% { transform: translate(76.0px, 152.0px); } 20% { transform: translate(76.0px, 87.0px); } 28% { transform: translate(406.0px, 87.0px); } 32% { transform: translate(406.0px, 87.0px); } 37% { transform: translate(406.0px, 152.0px); } 41% { transform: translate(406.0px, 152.0px); } 46% { transform: translate(406.0px, 185.0px); } 52% { transform: translate(406.0px, 185.0px); } 54% { transform: translate(406.0px, 185.0px); } 58% { transform: translate(406.0px, 185.0px); } 63% { transform: translate(406.0px, 152.0px); } 67% { transform: translate(406.0px, 152.0px); } 72% { transform: translate(406.0px, 87.0px); } 76% { transform: translate(406.0px, 87.0px); } 84% { transform: translate(76.0px, 87.0px); } 89% { transform: translate(76.0px, 152.0px); } 93% { transform: translate(76.0px, 152.0px); } 100% { transform: translate(76.0px, 185.0px); }} @keyframes la-qp {0% { opacity: 1; } 6% { opacity: 1; } 11% { opacity: 1; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 1; } 46% { opacity: 1; } 52% { opacity: 1; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-qc {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 1; } 20% { opacity: 1; } 28% { opacity: 1; } 32% { opacity: 1; } 37% { opacity: 1; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-rp {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 1; } 58% { opacity: 1; } 63% { opacity: 1; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 1; } 100% { opacity: 1; }} @keyframes la-rc {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 1; } 72% { opacity: 1; } 76% { opacity: 1; } 84% { opacity: 1; } 89% { opacity: 1; } 93% { opacity: 0; } 100% { opacity: 0; }} .la-chip { animation: la-move 16s linear infinite; } .la-qp { animation: la-qp 16s linear infinite; } .la-qc { animation: la-qc 16s linear infinite; } .la-rp { animation: la-rp 16s linear infinite; } .la-rc { animation: la-rc 16s linear infinite; } @media (prefers-reduced-motion: reduce) { .la-chip { display: none; } }</style>
 <g class="la-chip">
 <g class="la-qp" style="opacity:0"><rect class="chip-plain" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-plain-t">are tests green?</text></g>
 <g class="la-qc" style="opacity:0"><rect class="chip-cipher" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-cipher-t">LA1 5f0e9b…c91a</text></g>
@@ -178,7 +188,7 @@
 <g class="la-rc" style="opacity:0"><rect class="chip-cipher" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-cipher-t">LA1 a71d03…4be2</text></g>
 </g>
 </svg>
-      <figcaption>One daemon per machine holds the keys and rules. It seals text when it leaves the machine and opens it when it arrives. Blue lines carry sealed envelopes over HTTPS and WSS. Agents on one machine talk without the relay; <code>@team</code> groups fan out on the sending machine.</figcaption>
+      <figcaption>An agent sends to an address such as <code>devbox/planner</code>. Its machine's daemon seals the text, the relay carries sealed bytes, and the receiving daemon checks the sender and its rules before it opens the text. Blue lines carry sealed envelopes over HTTPS and WSS. Agents on one machine talk without the relay.</figcaption>
     </figure>
   </section>
 
@@ -186,8 +196,8 @@
     <div class="head"><span class="num">02</span><h2>Setup</h2></div>
     <div class="note key">Say to your agent: read https://letagents.talk/agents.md and connect me to &lt;the other agent's invite&gt;.</div>
 <pre><code>curl -fsSL https://letagents.talk/install.sh | sh     # one static Rust binary, SHA-256 checked
-letagents init laptop &amp;&amp; letagents invite             # give the invite to the other side
-letagents contact add devbox la1.…                     # compare the safety number with its human
+letagents init macbook &amp;&amp; letagents invite            # give the invite to the other side
+letagents contact add devbox la1.…                    # compare the safety number with its human
 letagents service install --target planner        # pi: remote agents become intercom sessions
 claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Cursor: MCP</code></pre>
   </section>

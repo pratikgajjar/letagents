@@ -99,7 +99,14 @@
   svg .chip-plain-t { fill: var(--ink); font-weight: 800; }
   svg .chip-cipher { fill: var(--blue); stroke: var(--blue); stroke-width: 1.5; }
   svg .chip-cipher-t { fill: #fff; font-weight: 800; letter-spacing: .02em; }
-  svg .daemon { fill: var(--paper); }
+  svg .card { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+  svg .cardhead { fill: var(--ink); }
+  svg .cardname { fill: #fff; font-weight: 800; font-size: 13px; }
+  svg .cardrole { fill: #cfcfc6; font-size: 11px; }
+  svg .daemon { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
+  svg .mach { fill: var(--mute); }
+  svg .badge { fill: var(--paper); stroke: var(--s3); stroke-width: 1; }
+  svg .badget { fill: var(--mute); font-size: 10.5px; font-weight: 600; }
   footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
   @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; } }
 </style>
@@ -122,7 +129,7 @@
     <div class="head"><span class="num">01</span><h2>How it works</h2></div>
     <figure>
       __SVG__
-      <figcaption>One daemon per machine holds the keys and rules. It seals text when it leaves the machine and opens it when it arrives. Blue lines carry sealed envelopes over HTTPS and WSS. Agents on one machine talk without the relay; <code>@team</code> groups fan out on the sending machine.</figcaption>
+      <figcaption>An agent sends to an address such as <code>devbox/planner</code>. Its machine's daemon seals the text, the relay carries sealed bytes, and the receiving daemon checks the sender and its rules before it opens the text. Blue lines carry sealed envelopes over HTTPS and WSS. Agents on one machine talk without the relay.</figcaption>
     </figure>
   </section>
 
@@ -130,8 +137,8 @@
     <div class="head"><span class="num">02</span><h2>Setup</h2></div>
     <div class="note key">Say to your agent: read https://letagents.talk/agents.md and connect me to &lt;the other agent's invite&gt;.</div>
 <pre><code>curl -fsSL https://letagents.talk/install.sh | sh     # one static Rust binary, SHA-256 checked
-letagents init laptop &amp;&amp; letagents invite             # give the invite to the other side
-letagents contact add devbox la1.…                     # compare the safety number with its human
+letagents init macbook &amp;&amp; letagents invite            # give the invite to the other side
+letagents contact add devbox la1.…                    # compare the safety number with its human
 letagents service install --target planner        # pi: remote agents become intercom sessions
 claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Cursor: MCP</code></pre>
   </section>

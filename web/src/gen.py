@@ -1,6 +1,6 @@
-# Generates the one diagram on web/index.html: machines, agents and addresses, the relay, and one
-# animated ask and reply (CSS keyframes only; positions are computed here).
-W, H = 980, 400
+# Generates the one diagram on web/index.html: machine cards with their agents and daemon, the relay on a
+# sealed bus, and one animated ask and reply that follows the lines (CSS keyframes only).
+W, H = 980, 300
 T = 16  # seconds per loop
 
 
@@ -11,59 +11,57 @@ def esc(s):
 out = []
 add = out.append
 
-# relay
-RX, RY, RW, RH = 395, 70, 190, 100
+# relay and the sealed bus
+RX, RY, RW, RH = 330, 8, 320, 58
+BUS = 98
+CARD_Y, CW_, HDR, DMN, ROW = 122, 300, 28, 26, 30
+cards = [
+    ("macbook", "you · macOS", 10, [("claude-1048c372", "Claude Code", True), ("codex-42619", "Codex", False), ("planner", "pi", False)]),
+    ("devbox", "cloud · Linux", 340, [("planner", "pi", True), ("reviewer", "pi", False), ("deployer", "pi", False)]),
+    ("alice", "teammate · macOS", 670, [("claude-7e21b9aa", "Claude Code", False), ("cursor-51022", "Cursor", False)]),
+]
+cx = {name: x + CW_ / 2 for name, _, x, _ in cards}
+# Sealed lines first, so cards and the relay draw over them.
+add(f'<polyline class="sealed" fill="none" points="{cx["macbook"]},{CARD_Y} {cx["macbook"]},{BUS} {cx["alice"]},{BUS} {cx["alice"]},{CARD_Y}"/>')
+add(f'<line class="sealed" x1="{cx["devbox"]}" y1="{RY+RH}" x2="{cx["devbox"]}" y2="{CARD_Y}"/>')
 add(f'<rect class="relayzone" x="{RX}" y="{RY}" width="{RW}" height="{RH}"/>')
-add(f'<text x="{RX+RW/2}" y="{RY+24}" text-anchor="middle" font-weight="800">letagents.talk relay</text>')
-add(f'<rect class="hl" x="{RX+20}" y="{RY+36}" width="{RW-40}" height="20"/>')
-add(f'<text x="{RX+RW/2}" y="{RY+50}" text-anchor="middle" font-weight="800">sealed bytes only</text>')
-add(f'<text x="{RX+RW/2}" y="{RY+74}" text-anchor="middle" class="sub">no sender, no keys</text>')
-add(f'<text x="{RX+RW/2}" y="{RY+90}" text-anchor="middle" class="sub">kept 48 h at most</text>')
+add(f'<text x="{RX+RW/2}" y="{RY+22}" text-anchor="middle" font-weight="800">letagents.talk relay</text>')
+add(f'<rect class="hl" x="{RX+14}" y="{RY+31}" width="138" height="19"/>')
+add(f'<text x="{RX+83}" y="{RY+45}" text-anchor="middle" font-weight="800">sealed bytes only</text>')
+add(f'<text x="{RX+164}" y="{RY+45}" class="sub">no sender · ≤ 48 h</text>')
 
-MW = 300
-machines = {
-    "laptop": (10, 10, [("laptop/claude-1048c372", "Claude Code", True), ("laptop/codex-42619", "Codex", False), ("laptop/cloud-bridge", "pi", False)]),
-    "devbox": (670, 10, [("devbox/planner", "pi", True), ("devbox/reviewer", "pi", False), ("devbox/docs-bot", "pi", False)]),
-    "teammate": (340, 248, [("teammate/claude-7e21b9aa", "Claude Code", False), ("teammate/reviewer", "pi", False)]),
-}
-pos = {}
-for name, (mx, my, agents) in machines.items():
-    mh = 30 + len(agents) * 30 + 44
-    add(f'<rect class="zone" x="{mx}" y="{my}" width="{MW}" height="{mh}"/>')
-    add(f'<text x="{mx+10}" y="{my+18}" class="zl">MACHINE {name.upper()}</text>')
-    add(f'<text x="{mx+MW-10}" y="{my+18}" text-anchor="end" class="zs">plaintext stays here</text>')
-    for i, (addr, harness, hl) in enumerate(agents):
-        ay = my + 28 + i * 30
-        add(f'<rect class="{"hl" if hl else "node"}" x="{mx+10}" y="{ay}" width="{MW-20}" height="24"/>')
-        add(f'<text x="{mx+18}" y="{ay+16}" font-weight="800">{esc(addr)}</text>')
-        add(f'<text x="{mx+MW-18}" y="{ay+16}" text-anchor="end" class="zs">{esc(harness)}</text>')
-        pos[addr] = (mx + MW / 2, ay + 12)
-    dy = my + 28 + len(agents) * 30 + 6
-    add(f'<rect class="node daemon" x="{mx+10}" y="{dy}" width="{MW-20}" height="26"/>')
-    add(f'<text x="{mx+MW/2}" y="{dy+17}" text-anchor="middle" font-weight="800">daemon: keys · rules · seal / open</text>')
-    pos[name] = (mx + MW / 2, dy + 13, mx, dy)
+rows = {}
+for name, role, x, agents in cards:
+    h = HDR + DMN + 10 + len(agents) * ROW + 6
+    add(f'<rect class="card" x="{x}" y="{CARD_Y}" width="{CW_}" height="{h}"/>')
+    add(f'<rect class="cardhead" x="{x}" y="{CARD_Y}" width="{CW_}" height="{HDR}"/>')
+    add(f'<text x="{x+12}" y="{CARD_Y+19}" class="cardname">{esc(name)}</text>')
+    add(f'<text x="{x+CW_-12}" y="{CARD_Y+19}" text-anchor="end" class="cardrole">{esc(role)}</text>')
+    dy = CARD_Y + HDR
+    add(f'<rect class="daemon" x="{x}" y="{dy}" width="{CW_}" height="{DMN}"/>')
+    add(f'<text x="{x+12}" y="{dy+17}" class="sub">daemon · keys · rules · seal / open</text>')
+    rows[name] = (cx[name], dy + DMN / 2)
+    for i, (agent, harness, hl) in enumerate(agents):
+        ay = dy + DMN + 8 + i * ROW
+        if hl:
+            add(f'<rect class="hl" x="{x+6}" y="{ay}" width="{CW_-12}" height="24"/>')
+        add(f'<text x="{x+12}" y="{ay+16}"><tspan class="mach">{esc(name)}/</tspan><tspan font-weight="800">{esc(agent)}</tspan></text>')
+        pw = len(harness) * 7 + 14
+        add(f'<rect class="badge" x="{x+CW_-12-pw}" y="{ay+4}" width="{pw}" height="16"/>')
+        add(f'<text x="{x+CW_-12-pw/2}" y="{ay+16}" text-anchor="middle" class="badget">{esc(harness)}</text>')
+        rows[f"{name}/{agent}"] = (cx[name], ay + 12)
 
-# sealed links: each daemon to the relay
-for name, edge in (("laptop", (RX, RY + RH / 2)), ("devbox", (RX + RW, RY + RH / 2))):
-    _, _, mx, dy = pos[name]
-    x0 = mx + MW - 10 if name == "laptop" else mx + 10
-    add(f'<polyline class="sealed" fill="none" points="{x0},{dy+13} {(x0+edge[0])/2},{dy+13} {(x0+edge[0])/2},{edge[1]} {edge[0]},{edge[1]}"/>')
-_, _, tmx, tdy = pos["teammate"]
-add(f'<line class="sealed" x1="{RX+RW/2}" y1="{RY+RH}" x2="{RX+RW/2}" y2="{machines["teammate"][1]}"/>')
-
-# animated ask (laptop/claude -> devbox/planner) and reply
-A = pos["laptop/claude-1048c372"][:2]
-DA = pos["laptop"][:2]
-R = (RX + RW / 2, RY + RH / 2)
-DB = pos["devbox"][:2]
-B = pos["devbox/planner"][:2]
-CW, CHH = 168, 22
+# animated ask (macbook/claude -> devbox/planner) and reply, along the lines
+A, DA = rows["macbook/claude-1048c372"], rows["macbook"]
+UA, R = (cx["macbook"], BUS), (cx["devbox"], BUS)
+DB, B = rows["devbox"], rows["devbox/planner"]
+CW, CH = 168, 22
 variants = {"qp": ("are tests green?", "plain"), "qc": ("LA1 5f0e9b…c91a", "cipher"),
             "rp": ("yes, all green", "plain"), "rc": ("LA1 a71d03…4be2", "cipher")}
-steps = [(0, A, "qp"), (6, A, "qp"), (13, DA, "qp"), (17, DA, "qc"), (26, R, "qc"), (30, R, "qc"), (39, DB, "qc"),
-         (43, DB, "qp"), (49, B, "qp"), (53, B, "qp"), (55, B, "rp"), (59, B, "rp"), (65, DB, "rp"), (69, DB, "rc"),
-         (78, R, "rc"), (82, R, "rc"), (91, DA, "rc"), (95, DA, "rp"), (100, A, "rp")]
-css = ["@keyframes la-move {" + " ".join(f"{p}% {{ transform: translate({x-CW/2:.1f}px, {y-CHH/2:.1f}px); }}" for p, (x, y), _ in steps) + "}"]
+steps = [(0, A, "qp"), (6, A, "qp"), (11, DA, "qp"), (15, DA, "qc"), (20, UA, "qc"), (28, R, "qc"), (32, R, "qc"),
+         (37, DB, "qc"), (41, DB, "qp"), (46, B, "qp"), (52, B, "qp"), (54, B, "rp"), (58, B, "rp"), (63, DB, "rp"),
+         (67, DB, "rc"), (72, R, "rc"), (76, R, "rc"), (84, UA, "rc"), (89, DA, "rc"), (93, DA, "rp"), (100, A, "rp")]
+css = ["@keyframes la-move {" + " ".join(f"{p}% {{ transform: translate({x-CW/2:.1f}px, {y-CH/2:.1f}px); }}" for p, (x, y), _ in steps) + "}"]
 for v in variants:
     css.append(f"@keyframes la-{v} {{" + " ".join(f"{p}% {{ opacity: {1 if vv == v else 0}; }}" for p, _, vv in steps) + "}")
 css.append(f".la-chip {{ animation: la-move {T}s linear infinite; }}")
@@ -72,12 +70,12 @@ css.append("@media (prefers-reduced-motion: reduce) { .la-chip { display: none; 
 add(f"<style>{' '.join(css)}</style>")
 add('<g class="la-chip">')
 for v, (txt, kind) in variants.items():
-    add(f'<g class="la-{v}" style="opacity:0"><rect class="chip-{kind}" x="0" y="0" width="{CW}" height="{CHH}"/>'
+    add(f'<g class="la-{v}" style="opacity:0"><rect class="chip-{kind}" x="0" y="0" width="{CW}" height="{CH}"/>'
         f'<text x="{CW/2}" y="15" text-anchor="middle" class="chip-{kind}-t">{esc(txt)}</text></g>')
 add("</g>")
 
-svg = (f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Three machines (laptop, devbox, teammate), each with several agents '
-       f'addressed as machine/agent and one daemon, all connected to the letagents.talk relay, which holds sealed bytes only. '
-       f'An animated question goes from laptop/claude-1048c372 to devbox/planner: plaintext on the laptop, sealed by the '
-       f'laptop daemon, sealed bytes through the relay, opened by the devbox daemon, and the reply returns the same way.">\n'
-       + "\n".join(out) + "\n</svg>")
+svg = (f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Three machines: macbook (you), devbox (cloud) and alice '
+       f'(teammate). Each runs several agents, addressed as machine/agent, and one daemon. The daemons share a sealed line to '
+       f'the letagents.talk relay, which holds sealed bytes only. An animated question goes from macbook/claude-1048c372 to '
+       f'devbox/planner: plaintext on the macbook, sealed by its daemon, carried by the relay, opened by the devbox '
+       f'daemon; the reply returns the same way.">\n' + "\n".join(out) + "\n</svg>")
