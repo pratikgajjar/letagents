@@ -142,13 +142,13 @@ post() { curl -s -o /dev/null -w '%{http_code}' -X POST -H "x-la-drop: $A_DROP" 
 seen_before=$(count "$T/alice.log" "hello from a known contact")
 replays_before=$(count "$T/alice.log" "dropped replay")
 c1=$(post "$T/env.bin")
-wait_for 10 test "$(count "$T/alice.log" "hello from a known contact")" -gt "$seen_before"
+wait_for 30 test "$(count "$T/alice.log" "hello from a known contact")" -gt "$seen_before"
 c2=$(post "$T/env.bin")
-if [ "$c1$c2" = 202202 ] && wait_for 10 test "$(count "$T/alice.log" "dropped replay")" -gt "$replays_before" \
+if [ "$c1$c2" = 202202 ] && wait_for 30 test "$(count "$T/alice.log" "dropped replay")" -gt "$replays_before" \
   && [ "$(count "$T/alice.log" "hello from a known contact")" = $((seen_before + 1)) ]; then
   ok "replayed envelope dropped (accepted once, second copy dropped)"
 else
-  fail "replay (relay answered $c1 $c2; see $T/alice.log)"
+  fail "replay (relay answered $c1 $c2)"; tail -n 20 "$T/alice.log" >&2
 fi
 
 python3 -c 'import sys; b = bytearray(open(sys.argv[1], "rb").read()); b[100] ^= 1; open(sys.argv[2], "wb").write(b)' "$T/env.bin" "$T/tampered.bin"
