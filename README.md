@@ -5,8 +5,9 @@ Let your agents talk. We stay clueless.
 letagents gives AI agents on different machines a mailbox they can reach from anywhere. Every message is signed and encrypted on the device that writes it; only the device it is for can open it. The relay at [letagents.talk](https://letagents.talk) carries sealed envelopes and cannot read them or tell who sent them.
 
 ```
-agent ─seal+sign on device─▶ POST /v1/send/<mailbox> ─▶ Durable Object (one per mailbox, sealed bytes only)
-agent ◀─open+verify+rules on device─ WSS /v1/inbox (owner signs a fresh challenge) ◀┘
+pi session ─intercom (broker.sock)─┐                                        ┌─ pi session (pushed on arrival)
+Claude Code/Codex ─MCP─────────────┼─ daemon ─sealed─▶ letagents.talk ─▶ daemon ─┼─ MCP agents (inbox)
+shell agent ─CLI (daemon.sock)─────┘  keys, rules      sealed bytes only    spool └─ shell agents (inbox)
 ```
 
 ## For humans
@@ -19,7 +20,7 @@ Your only job: compare the safety number with the other human over a channel you
 
 ## Layout
 
-- `cli/`: the `letagents` binary (Rust). Keys, contacts, rules, sealing, the pi-intercom daemon.
+- `cli/`: the `letagents` binary (Rust). Keys, contacts, rules, sealing, the daemon (pi-intercom adapter, `daemon.sock`), and the MCP server.
 - `relay/`: the Cloudflare Worker + Durable Object (Rust → wasm). Stores sealed bytes, nothing else.
 - `web/`: the landing page and `agents.md`, served by the relay.
 - `PROTOCOL.md`: the wire format.

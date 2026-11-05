@@ -34,7 +34,6 @@ pub struct Local {
 pub struct Sent {
     pub id: String,
     pub delivered: bool,
-    pub reason: Option<String>,
 }
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, Option<String>)>>>>;
@@ -44,7 +43,7 @@ pub struct Proxy {
     pending: Pending,
 }
 
-async fn read_frame(r: &mut (impl AsyncReadExt + Unpin)) -> Result<Value> {
+pub async fn read_frame(r: &mut (impl AsyncReadExt + Unpin)) -> Result<Value> {
     let len = r.read_u32().await? as usize;
     if len > MAX_FRAME {
         bail!("frame too large");
@@ -54,7 +53,7 @@ async fn read_frame(r: &mut (impl AsyncReadExt + Unpin)) -> Result<Value> {
     Ok(serde_json::from_slice(&buf)?)
 }
 
-fn frame(v: &Value) -> Vec<u8> {
+pub fn frame(v: &Value) -> Vec<u8> {
     let body = serde_json::to_vec(v).expect("json");
     let mut out = (body.len() as u32).to_be_bytes().to_vec();
     out.extend(body);
@@ -139,8 +138,8 @@ impl Proxy {
             message["expectsReply"] = json!(true);
         }
         self.out.send(json!({ "type": "send", "to": to, "message": message }))?;
-        let (delivered, reason) = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await.context("broker send timeout")??;
-        Ok(Sent { id, delivered, reason })
+        let (delivered, _reason) = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await.context("broker send timeout")??;
+        Ok(Sent { id, delivered })
     }
 }
 

@@ -34,7 +34,7 @@ pub fn now_ms() -> i64 {
 }
 
 /// This device's secrets. Stored at ~/.letagents/identity.json with mode 0600.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Identity {
     pub name: String,
     sig: String,

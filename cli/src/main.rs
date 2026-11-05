@@ -3,6 +3,7 @@
 mod crypto;
 mod daemon;
 mod intercom;
+mod mcp;
 mod relay;
 mod service;
 mod store;
@@ -36,6 +37,39 @@ enum Cmd {
     Requests,
     /// Send our address to a contact so they can add us
     Hello { contact: String },
+    /// Ask a contact and wait for the reply (needs the daemon)
+    Ask {
+        contact: String,
+        text: String,
+        #[arg(long)]
+        session: Option<String>,
+        /// Your local session name (replies that arrive late go to its inbox)
+        #[arg(long = "as")]
+        as_: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        timeout: u64,
+    },
+    /// Read and remove messages waiting for a local agent (needs the daemon)
+    Inbox {
+        #[arg(long = "as")]
+        as_: Option<String>,
+        /// Wait up to this many seconds for a message
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+        /// Print a plain-text block for a harness hook (nothing when empty)
+        #[arg(long)]
+        hook: bool,
+    },
+    /// Answer an ask from the inbox by its id (needs the daemon)
+    Reply { id: String, text: String },
+    /// Show daemon status
+    Status,
+    /// MCP server over stdio for Claude Code, Codex, Cursor, Gemini CLI, OpenCode
+    Mcp {
+        /// This agent's session name; messages for it land in its inbox
+        #[arg(long = "as", default_value = "planner")]
+        as_: String,
+    },
     /// Send a sealed message
     Send {
         contact: String,
@@ -243,6 +277,44 @@ async fn main() -> Result<()> {
             .await
         }
         Cmd::Daemon { target } => daemon::run(store::identity()?, target).await,
+        Cmd::Mcp { as_ } => mcp::run(as_).await,
+        Cmd::Status => {
+            let v = daemon::call(serde_json::json!({ "op": "status" })).await?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        Cmd::Ask { contact, text, session, as_, timeout } => {
+            let v = daemon::call(serde_json::json!({ "op": "ask", "to": contact, "text": text, "session": session, "as": as_, "timeout_ms": timeout * 1000 })).await?;
+            match v["reply"]["text"].as_str() {
+                Some(t) => println!("{t}"),
+                None => {
+                    eprintln!("no reply within {timeout}s; it will arrive in the inbox (msg {})", v["msg_id"].as_str().unwrap_or_default());
+                    std::process::exit(2);
+                }
+            }
+            Ok(())
+        }
+        Cmd::Inbox { as_, wait, hook } => {
+            let v = daemon::call(serde_json::json!({ "op": "inbox", "as": as_, "wait_ms": wait * 1000 })).await?;
+            let msgs = v["messages"].as_array().cloned().unwrap_or_default();
+            if hook {
+                for m in &msgs {
+                    let s = |k: &str| m[k].as_str().unwrap_or_default().to_string();
+                    let how = if s("kind") == "ask" { format!("ASK, answer with: letagents reply {} \"<text>\"", s("id")) } else { s("kind") };
+                    println!("[letagents · verified {}] {how}\n{}\n", s("from"), s("text"));
+                }
+            } else {
+                for m in &msgs {
+                    println!("{m}");
+                }
+            }
+            Ok(())
+        }
+        Cmd::Reply { id, text } => {
+            let v = daemon::call(serde_json::json!({ "op": "reply", "msg": id, "text": text })).await?;
+            println!("sent {}", v["msg_id"].as_str().unwrap_or_default());
+            Ok(())
+        }
         Cmd::Service { action, target } => service::run(&action, &target),
     }
 }
