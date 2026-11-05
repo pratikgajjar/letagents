@@ -27,6 +27,8 @@ fail() { echo "FAIL $1"; FAILS=$((FAILS + 1)); }
 check() { local name=$1; shift; if "$@"; then ok "$name"; else fail "$name"; fi; }
 die() { echo "FAIL $1"; FAILS=$((FAILS + 1)); for f in "$T"/*.log; do echo "--- $f"; tail -30 "$f"; done; exit 1; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+# logged FILE PATTERN OP N: re-counts on every call, so wait_for can poll it
+logged() { [ "$(count "$1" "$2")" "$3" "$4" ]; }
 wait_for() {
   local n=$(($1 * 5)); shift
   for _ in $(seq "$n"); do "$@" >/dev/null 2>&1 && return 0; sleep 0.2; done
@@ -152,10 +154,10 @@ capture "$T/z_env.bin" zed hello alice || die "no envelope captured from la.mjs"
 flip "$T/z_env.bin" "$T/z_bad.bin"
 before=$(count "$T/alice.log" "dropped envelope: cannot decrypt")
 c=$(post "$A_ADDR" "$T/z_bad.bin")
-check "daemon drops a tampered la.mjs envelope ($c)" wait_for 10 test "$(count "$T/alice.log" "dropped envelope: cannot decrypt")" -gt "$before"
+check "daemon drops a tampered la.mjs envelope ($c)" wait_for 10 logged "$T/alice.log" "dropped envelope: cannot decrypt" -gt "$before"
 before=$(count "$T/alice.log" "hello from a known contact")
 c=$(post "$A_ADDR" "$T/z_env.bin")
-check "daemon opens the untampered la.mjs envelope ($c)" wait_for 10 test "$(count "$T/alice.log" "hello from a known contact")" -gt "$before"
+check "daemon opens the untampered la.mjs envelope ($c)" wait_for 10 logged "$T/alice.log" "hello from a known contact" -gt "$before"
 
 # daemon-sealed envelope, tampered and replayed, into la.mjs
 capture "$T/a_env.bin" la alice hello zed || die "no envelope captured from the binary"

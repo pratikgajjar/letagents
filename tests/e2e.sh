@@ -30,6 +30,8 @@ check() { # check <name> <command...>
 die() { echo "FAIL $1"; FAILS=$((FAILS + 1)); for f in "$T"/*.log; do echo "--- $f"; tail -30 "$f"; done; exit 1; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 # wait_for <seconds> <command...>: retry every 0.2 s until the command succeeds
+# logged FILE PATTERN OP N: re-counts on every call, so wait_for can poll it
+logged() { [ "$(count "$1" "$2")" "$3" "$4" ]; }
 wait_for() {
   local n=$(($1 * 5)); shift
   for _ in $(seq "$n"); do "$@" >/dev/null 2>&1 && return 0; sleep 0.2; done
@@ -145,7 +147,7 @@ c1=$(post "$T/env.bin")
 c2=$(post "$T/env.bin")
 # The same envelope must be processed at most once: at least one copy is dropped as a replay,
 # and the hello is handled at most once (the CLI may already have delivered it through the daemon).
-if [ "$c1$c2" = 202202 ] && wait_for 30 test "$(count "$T/alice.log" "dropped replay")" -ge 1 \
+if [ "$c1$c2" = 202202 ] && wait_for 30 logged "$T/alice.log" "dropped replay" -ge 1 \
   && [ "$(count "$T/alice.log" "hello from a known contact")" -le $((seen_before + 1)) ]; then
   ok "replayed envelope dropped (processed at most once)"
 else
@@ -155,7 +157,7 @@ fi
 python3 -c 'import sys; b = bytearray(open(sys.argv[1], "rb").read()); b[100] ^= 1; open(sys.argv[2], "wb").write(b)' "$T/env.bin" "$T/tampered.bin"
 tampered_before=$(count "$T/alice.log" "dropped envelope: cannot decrypt")
 c3=$(post "$T/tampered.bin")
-if [ "$c3" = 202 ] && wait_for 10 test "$(count "$T/alice.log" "dropped envelope: cannot decrypt")" -gt "$tampered_before"; then
+if [ "$c3" = 202 ] && wait_for 10 logged "$T/alice.log" "dropped envelope: cannot decrypt" -gt "$tampered_before"; then
   ok "tampered envelope dropped (cannot decrypt)"
 else
   fail "tamper (relay answered $c3; see $T/alice.log)"
