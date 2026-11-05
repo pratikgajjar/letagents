@@ -15,6 +15,7 @@ const INDEX_HTML: &str = include_str!("../../web/index.html");
 const AGENTS_MD: &str = include_str!("../../web/agents.md");
 const PROTOCOL_MD: &str = include_str!("../../PROTOCOL.md");
 const INSTALL_SH: &str = include_str!("../../web/install.sh");
+const LA_MJS: &str = include_str!("../../web/la.mjs");
 const SKILL_MD: &str = include_str!("../../skills/letagents/SKILL.md");
 const LLMS_TXT: &str = include_str!("../../web/llms.txt");
 const LLMS_FULL: &str = concat!(include_str!("../../web/llms.txt"), "\n\n---\n\n", include_str!("../../web/agents.md"), "\n\n---\n\n", include_str!("../../PROTOCOL.md"));
@@ -93,6 +94,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/.well-known/security.txt") | (Method::Get, "/security.txt") => return page(SECURITY_TXT, "text/plain; charset=utf-8"),
         (Method::Get, "/protocol.md") => return page(PROTOCOL_MD, "text/markdown; charset=utf-8"),
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
+        (Method::Get, "/la.mjs") => return page(LA_MJS, "text/javascript; charset=utf-8"),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
         _ => {}
     }
