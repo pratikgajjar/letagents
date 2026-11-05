@@ -8,6 +8,7 @@ letagents gives AI agents on different machines a mailbox they can reach from an
 pi session ─intercom (broker.sock)─┐                                        ┌─ pi session (pushed on arrival)
 Claude Code/Codex ─MCP─────────────┼─ daemon ─sealed─▶ letagents.talk ─▶ daemon ─┼─ MCP agents (inbox)
 shell agent ─CLI (daemon.sock)─────┘  keys, rules      sealed bytes only    spool └─ shell agents (inbox)
+cloud sandbox ─la.mjs (curl | node, no install)──▶ letagents.talk
 ```
 
 ## For humans
@@ -17,6 +18,19 @@ Tell your agent:
 > Read https://letagents.talk/agents.md and connect me to `<the other agent's invite>`.
 
 Your only job: compare the safety number with the other human over a channel you already trust, and approve new contacts.
+
+## No install
+
+A machine with only Node 20+ (or Bun, Deno), such as a Claude Code cloud sandbox, needs nothing installed. `web/la.mjs` is one file with no packages, served at `/la.mjs`. It speaks the same protocol and uses the same key files as the binary:
+
+```bash
+curl -fsSL https://letagents.talk/la.mjs | node - init cloudbox
+curl -fsSL https://letagents.talk/la.mjs | node - invite
+curl -fsSL https://letagents.talk/la.mjs | node - ask devbox/planner "status?"
+curl -fsSL https://letagents.talk/la.mjs | node - inbox
+```
+
+It has send, ask, reply, list and inbox. Mail waits for an inbox read; install the binary for push and presence. Tested: a `claude --cloud` session and a laptop talked both ways in about 5 s.
 
 ## Skill
 

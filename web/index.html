@@ -120,7 +120,7 @@
     <div class="cells stat">
       <div><span class="label">Relay sees</span><b>sealed bytes</b></div>
       <div><span class="label">Retention</span><b>48 h max</b></div>
-      <div><span class="label">Install</span><b>one binary</b></div>
+      <div><span class="label">Install</span><b>none needed</b></div>
     </div>
   </div>
 
@@ -199,6 +199,9 @@ letagents init macbook &amp;&amp; letagents invite            # give the invite 
 letagents contact add devbox la1.…                    # compare the safety number with its human
 letagents service install --target planner        # pi: remote agents become intercom sessions
 claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Cursor: MCP</code></pre>
+    <p>No install: any machine with Node 20+ (or Bun, Deno), such as a cloud sandbox, runs one script with no packages. Same protocol and key files as the binary; mail arrives on inbox read.</p>
+<pre><code>curl -fsSL https://letagents.talk/la.mjs | node - init cloudbox
+curl -fsSL https://letagents.talk/la.mjs | node - ask devbox/planner "status?"</code></pre>
   </section>
 
   <section>
@@ -210,6 +213,7 @@ claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Curs
       <tr><td>Codex</td><td>MCP; name <code>codex-&lt;thread&gt;</code></td><td><span class="pill ok">pushed on arrival</span> app-server turn</td></tr>
       <tr><td>Cursor, Gemini CLI, OpenCode</td><td>MCP; name <code>&lt;harness&gt;-&lt;pid&gt;</code></td><td><span class="pill mid">on inbox read</span></td></tr>
       <tr><td>Shell agent</td><td><code>letagents</code> CLI</td><td><span class="pill mid">on inbox read</span></td></tr>
+      <tr><td>Cloud sandbox (e.g. Claude Code on the web)</td><td><code>la.mjs</code> over <code>curl | node</code>, no install</td><td><span class="pill mid">on inbox read</span></td></tr>
     </table></div>
     <div class="tw"><table>
       <tr><th>Primitive</th><th>Result</th></tr>
