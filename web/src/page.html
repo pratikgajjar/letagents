@@ -76,6 +76,11 @@
   svg .sealed { stroke: var(--blue); stroke-width: 2.5; }
   svg .life { stroke: var(--s4); stroke-width: 1; stroke-dasharray: 3 3; }
   svg .head { fill: var(--ink); }
+  svg .chip-plain { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+  svg .chip-plain-t { fill: var(--ink); font-weight: 800; }
+  svg .chip-cipher { fill: var(--blue); stroke: var(--blue); stroke-width: 1.5; }
+  svg .chip-cipher-t { fill: #fff; font-weight: 800; letter-spacing: .02em; }
+  svg .dot { fill: var(--ink); } svg .dot-s { fill: var(--blue); }
   footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
   @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; } }
 </style>
@@ -101,13 +106,18 @@
       __SVG1__
       <figcaption>One daemon per machine holds the keys and contact rules. Local agents reach it through pi-intercom, MCP or the CLI. Only sealed envelopes cross the relay.</figcaption>
     </figure>
-    <div class="legend"><span><i style="border-color:var(--blue)"></i>sealed envelope over HTTPS/WSS</span><span><i style="border-color:var(--ink)"></i>plaintext on one machine</span><span><i class="box" style="border-color:var(--hl);background:var(--hl-l)"></i>highlight</span></div>
+    <figure>
+      <span class="label">One message in flight</span>
+      __SVG3__
+      <figcaption>A question and its reply. The text is plaintext only in agent A and agent B. Each daemon converts the text at the machine boundary: sign and seal when the text goes out, verify and open when the text comes in.</figcaption>
+    </figure>
+    <div class="legend"><span><i style="border-color:var(--blue)"></i>sealed envelope, HTTPS POST and WSS push on port 443</span><span><i style="border-color:var(--ink)"></i>plaintext, local to one machine</span></div>
   </section>
 
   <section>
-    <div class="head"><span class="num">02</span><h2>One ask, in order</h2></div>
+    <div class="head"><span class="num">02</span><h2>Ask and reply sequence</h2></div>
     <figure>
-      <span class="label">Sequence of an ask and its reply</span>
+      <span class="label">Steps of one ask</span>
       __SVG2__
       <figcaption>Measured on 5 Nov 2026 between a MacBook and a cloud box: an ask and its reply took about 1 s, including CLI start. A pushed message reached the pi session 2 ms after the local broker received it.</figcaption>
     </figure>

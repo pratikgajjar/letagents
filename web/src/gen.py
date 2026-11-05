@@ -49,8 +49,8 @@ parts.append(f'<text x="{W/2}" y="110" text-anchor="middle" class="sub">one mail
 parts.append(f'<rect class="hl" x="{W/2-76}" y="122" width="152" height="20"/>')
 parts.append(f'<text x="{W/2}" y="136" text-anchor="middle" font-weight="800">sealed bytes only</text>')
 parts.append(f'<text x="{W/2}" y="160" text-anchor="middle" class="sub">no sender identity</text>')
-parts.append(f'<text x="{W/2}" y="176" text-anchor="middle" class="sub">no contacts, no rules</text>')
-parts.append(f'<text x="{W/2}" y="192" text-anchor="middle" class="sub">deleted on ack or 48 h</text>')
+parts.append(f'<text x="{W/2}" y="176" text-anchor="middle" class="sub">no contacts or rules</text>')
+parts.append(f'<text x="{W/2}" y="192" text-anchor="middle" class="sub">deleted on ack or after 48 h</text>')
 daX=10+12+128+92+96; dbX=W-10-mw+12
 parts.append(arrow(daX,120,rx,120,"sealed","POST",ly=112))
 parts.append(arrow(rx+relay_w,120,dbX,120,"sealed","WSS",ly=112))
@@ -83,3 +83,48 @@ for k,(a,b,label) in enumerate(steps):
 svg2=f'<svg viewBox="0 0 {W} {H2}" role="img" aria-label="Sequence of one ask: agent A asks, daemon A signs and seals, the relay pushes it to daemon B, which verifies and applies rules, pushes it into agent B\'s session; the reply travels back the same way and closes the ask.">\n'+"\n".join(p)+'\n</svg>'
 
 
+
+# ---- diagram 3: one message in flight (CSS keyframes, no script) ----
+T = 16  # seconds per loop
+xs = [70 + i * (W - 140) / 4 for i in range(5)]
+names = ["agent A", "daemon A", "relay", "daemon B", "agent B"]
+states = ["plaintext", "sign + seal", "sealed bytes", "verify + open", "plaintext"]
+variants = {
+    "qp": ("are tests green?", "plain"),
+    "qc": ("LA1 5f0e9b…c91a", "cipher"),
+    "rp": ("yes, all green", "plain"),
+    "rc": ("LA1 a71d03…4be2", "cipher"),
+}
+pts = [(0,0,"qp"),(6,0,"qp"),(14,1,"qp"),(18,1,"qc"),(25,2,"qc"),(29,2,"qc"),(36,3,"qc"),(40,3,"qp"),(46,4,"qp"),(51,4,"qp"),
+       (53,4,"rp"),(57,4,"rp"),(64,3,"rp"),(68,3,"rc"),(75,2,"rc"),(79,2,"rc"),(86,1,"rc"),(90,1,"rp"),(96,0,"rp"),(100,0,"rp")]
+H3 = 150; LY = 64; CW = 150
+css = [f"@keyframes la-move {{" + " ".join(f"{p}% {{ transform: translate({xs[i]-CW/2:.1f}px, 0px); }}" for p,i,_ in pts) + "}"]
+for v in variants:
+    css.append(f"@keyframes la-{v} {{" + " ".join(f"{p}% {{ opacity: {1 if vv==v else 0}; }}" for p,_,vv in pts) + "}")
+for s in range(5):
+    css.append(f"@keyframes la-st{s} {{" + " ".join(f"{p}% {{ opacity: {1 if i==s else 0}; }}" for p,i,_ in pts) + "}")
+css.append(f".la-chip {{ animation: la-move {T}s linear infinite; }}")
+for v in variants:
+    css.append(f".la-{v} {{ animation: la-{v} {T}s linear infinite; }}")
+for s in range(5):
+    css.append(f".la-st{s} {{ animation: la-st{s} {T}s linear infinite; }}")
+css.append("@media (prefers-reduced-motion: reduce) { .la-chip, .la-chip * , [class^='la-st'] { animation: none !important; } .la-chip { display: none; } .la-static { display: inline; } }")
+css.append(".la-static { display: none; }")
+p3 = [f"<style>{' '.join(css)}</style>"]
+p3.append(f'<line class="life" x1="{xs[0]}" y1="{LY}" x2="{xs[-1]}" y2="{LY}"/>')
+p3.append(f'<line class="sealed" x1="{xs[1]}" y1="{LY}" x2="{xs[3]}" y2="{LY}"/>')
+for s,(x,n,st) in enumerate(zip(xs,names,states)):
+    cls = "node relayzone" if n == "relay" else "node"
+    p3.append(f'<rect class="hl la-st{s}" x="{x-60}" y="6" width="120" height="26" style="opacity:0"/>')
+    p3.append(f'<rect class="{cls}" x="{x-58}" y="8" width="116" height="22" style="fill-opacity:0"/>')
+    p3.append(f'<text x="{x}" y="24" text-anchor="middle" font-weight="800">{n}</text>')
+    p3.append(f'<circle cx="{x}" cy="{LY}" r="4" class="{"dot-s" if 1<=s<=3 else "dot"}"/>')
+    p3.append(f'<text x="{x}" y="{LY+52}" text-anchor="middle" class="{"sub" if s in (0,4) else "zs"}">{st}</text>')
+p3.append('<g class="la-chip">')
+for v,(txt,kind) in variants.items():
+    p3.append(f'<g class="la-{v}" style="opacity:0"><rect class="chip-{kind}" x="0" y="{LY-13}" width="{CW}" height="26"/>'
+              f'<text x="{CW/2}" y="{LY+4}" text-anchor="middle" class="chip-{kind}-t">{esc(txt)}</text></g>')
+p3.append('</g>')
+p3.append(f'<text x="{W/2}" y="{LY+5}" text-anchor="middle" class="la-static zs">animation paused (reduced motion)</text>')
+p3.append(f'<text x="{(xs[1]+xs[3])/2}" y="{H3-8}" text-anchor="middle" class="zs">only sealed bytes leave a machine · 1 KiB padded · the relay never holds a key</text>')
+svg3 = f'<svg viewBox="0 0 {W} {H3}" role="img" aria-label="Animation: the question &quot;are tests green?&quot; leaves agent A as plaintext, daemon A signs and seals it into ciphertext, the relay carries sealed bytes, daemon B verifies and opens it back to plaintext for agent B, and the reply makes the same trip back.">\n' + "\n".join(p3) + "\n</svg>"
