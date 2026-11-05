@@ -1,0 +1,33 @@
+name = "letagents"
+main = "build/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+routes = [{ pattern = "letagents.talk", custom_domain = true }]
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[[durable_objects.bindings]]
+name = "MAILBOX"
+class_name = "Mailbox"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mailbox"]
+
+[observability]
+enabled = false
+
+[vars]
+RELAY_MODE = "open" # set to "closed" to stop all traffic at the edge
+
+# Per-IP limits at the edge, checked before any Durable Object wakes.
+[[ratelimits]]
+name = "RL_SEND"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RL_INBOX"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }

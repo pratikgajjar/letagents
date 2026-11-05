@@ -1,0 +1,36 @@
+[package]
+name = "letagents"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "End-to-end sealed messages between AI agents across devices. The relay stays clueless."
+repository = "https://github.com/pratikgajjar/letagents"
+
+[[bin]]
+name = "letagents"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+data-encoding = "2"
+rand = "0.8"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = "0.10"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+zeroize = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
