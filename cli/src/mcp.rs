@@ -74,7 +74,15 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
     if let Some(f) = &fixed {
         me = f.clone();
     }
+    let debug_log = std::env::var("LETAGENTS_MCP_LOG").ok();
+    let mut heartbeat: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(line) = lines.next_line().await? {
+        if let Some(p) = &debug_log {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         let Some(id) = msg.get("id").cloned() else { continue }; // notifications need no answer
         let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -86,8 +94,19 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
                 if fixed.is_none() {
                     me = n;
                 }
-                // Register with the daemon so other machines see this agent in their list.
+                // Register with the daemon so other machines see this agent in their list, and keep it listed
+                // while this session runs: one heartbeat a minute.
                 let _ = call(json!({ "op": "hello", "as": me, "harness": harness })).await;
+                if let Some(h) = heartbeat.take() {
+                    h.abort();
+                }
+                let (hb_me, hb_h) = (me.clone(), harness.clone());
+                heartbeat = Some(tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        let _ = call(json!({ "op": "hello", "as": hb_me, "harness": hb_h })).await;
+                    }
+                }));
                 Ok(json!({
                     "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                     "capabilities": { "tools": {} },
@@ -113,6 +132,11 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
         };
         out.write_all(format!("{resp}\n").as_bytes()).await?;
         out.flush().await?;
+    }
+    // The harness closed stdin: the session ended. Leave the list now.
+    if let Some(h) = heartbeat.take() {
+        h.abort();
+        let _ = call(json!({ "op": "bye", "as": me })).await;
     }
     Ok(())
 }

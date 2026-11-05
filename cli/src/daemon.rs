@@ -29,7 +29,8 @@ use tokio::sync::{mpsc, oneshot, Notify};
 pub const SYSTEM_SESSION: &str = "letagents";
 const ROSTER_REFRESH: Duration = Duration::from_secs(600);
 const PRESENCE_CHECK: Duration = Duration::from_secs(30);
-const SOCKET_AGENT_TTL_MS: i64 = 15 * 60 * 1000;
+/// MCP agents heartbeat every 60 s; one missed by 3 minutes has left.
+const SOCKET_AGENT_TTL_MS: i64 = 3 * 60 * 1000;
 
 pub fn socket_path() -> PathBuf {
     store::home().join("daemon.sock")
@@ -750,11 +751,16 @@ async fn deliver_local(hub: &Hub, from: &str, agent: &str, kind: &str, text: &st
 
 async fn handle(hub: &Hub, r: Req) -> Result<Value> {
     let me_as = r.as_.clone().unwrap_or_else(|| hub.default_target.clone());
-    if r.as_.is_some() {
+    if r.as_.is_some() && r.op != "bye" {
         hub.touch_socket_agent(&me_as, r.harness.as_deref());
     }
     match r.op.as_str() {
         "hello" => Ok(json!({ "ok": true, "as": me_as, "machine": hub.me.name })),
+        "bye" => {
+            hub.socket_agents.lock().unwrap().remove(&me_as);
+            log(format!("{me_as} left"));
+            Ok(json!({ "ok": true }))
+        }
         "status" => {
             let s = hub.spool.lock().unwrap();
             Ok(json!({
