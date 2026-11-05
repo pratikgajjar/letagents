@@ -33,6 +33,9 @@ jobs:
       - name: end-to-end (local relay, two daemons)
         timeout-minutes: 8
         run: tests/e2e.sh
+      - name: zero-install client (web/la.mjs) against the daemon
+        timeout-minutes: 8
+        run: tests/zero.sh
 
   deploy-relay:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
