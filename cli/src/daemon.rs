@@ -5,11 +5,17 @@
 //!   machine is a session too (`devbox/planner`), so agents just `send`/`ask` the name they want.
 //!   Inbound mail is pushed straight into the target pi session; asks keep their ask/reply link.
 //! - everything else: `~/.letagents/daemon.sock` (same framing as pi-intercom). `letagents mcp` and the CLI
-//!   use it. Mail for an agent that is not on intercom waits in the spool until it reads its inbox.
+//!   use it. Mail is pushed into the session when its harness allows it, else it waits in the spool until
+//!   the agent reads its inbox:
+//!   - Claude Code: `letagents mcp` holds a `watch` connection and posts each message to its own session's
+//!     inbox socket (Claude Code cross-session messaging); an idle session starts a turn.
+//!   - Codex: open threads of the shared Codex app-server are local agents `codex-<id>`; a message starts a
+//!     turn on that thread (`turn/start`).
 //!
 //! Primitives over the relay (all sealed): send, ask, reply, list -> roster (who is online), unsolicited
 //! roster (presence), receipt (pushed / queued / refused), hello (contact request). Groups fan out locally.
 
+use crate::codex;
 use crate::crypto::{now_ms, open, Identity, Inner, Peer};
 use crate::intercom::{frame, read_frame, stable_session_id, Local, Proxy};
 use crate::store::{self, Seen};
@@ -79,6 +85,25 @@ enum Waiter {
     Spool { asker: String },
 }
 
+/// A message for a watching MCP server to post into its session; `done` gets whether it was posted.
+struct Push {
+    msg: Value,
+    done: oneshot::Sender<bool>,
+}
+
+/// The text an agent sees for a message: a short header naming the sender once, then the body.
+/// The MCP tool descriptions say how to answer.
+fn render(m: &Spooled, machine: &str) -> String {
+    let local = m.from.starts_with(&format!("{machine}/"));
+    let who = if local { format!("[letagents · {}]", m.from) } else { format!("[letagents · verified {}]", m.from) };
+    match m.kind.as_str() {
+        "ask" => format!("{who} ASK {}\n\n{}", m.id, m.text),
+        "reply" => format!("{who} REPLY {}\n\n{}", m.reply_to.as_deref().unwrap_or("?"), m.text),
+        "notice" => m.text.clone(),
+        _ => format!("{who}\n\n{}", m.text),
+    }
+}
+
 /// Who wants the receipt for a message we sealed.
 enum ReceiptWaiter {
     Intercom { proxy: String, local_from: String, to: String },
@@ -102,6 +127,10 @@ struct Hub {
     local_ask_by_intercom: Mutex<HashMap<String, String>>,
     /// local agents seen on the socket (MCP, CLI): name -> (harness, last seen)
     socket_agents: Mutex<HashMap<String, (String, i64)>>,
+    /// MCP servers that push messages into their session (Claude Code): name -> channel
+    watchers: Mutex<HashMap<String, mpsc::UnboundedSender<Push>>>,
+    /// open Codex threads: codex-<id> -> thread id
+    codex_threads: Mutex<HashMap<String, String>>,
     /// contact proxies ("devbox") and remote-agent proxies ("devbox/planner")
     proxies: RwLock<HashMap<String, Arc<Proxy>>>,
     system: RwLock<Option<Arc<Proxy>>>,
@@ -164,6 +193,59 @@ impl Hub {
         self.arrived.notify_waiters();
     }
 
+    /// Hand a message to a local agent: push it into its session if its harness allows that, else spool
+    /// it for its inbox. Asks stay answerable either way. Returns true when pushed.
+    async fn hand_over(&self, m: Spooled, answerable_from: Option<&str>) -> bool {
+        if let Some(contact) = answerable_from {
+            let mut s = self.spool.lock().unwrap();
+            s.answerable.insert(m.id.clone(), (contact.to_string(), m.ts));
+            self.save_spool(&s);
+        }
+        if self.push(&m).await {
+            return true;
+        }
+        self.spool(m, None);
+        false
+    }
+
+    /// Push into the target's session: through its watching MCP server (Claude Code), or as a new turn on
+    /// its open Codex thread. Never logs the text.
+    async fn push(&self, m: &Spooled) -> bool {
+        let text = render(m, &self.me.name);
+        let tx = self.watchers.lock().unwrap().get(&m.target).cloned();
+        if let Some(tx) = tx {
+            let (done, rx) = oneshot::channel();
+            let msg = json!({ "id": m.id, "from": m.from, "kind": m.kind, "text": text });
+            if tx.send(Push { msg, done }).is_ok() && matches!(tokio::time::timeout(Duration::from_secs(5), rx).await, Ok(Ok(true))) {
+                return true;
+            }
+        }
+        if m.target.starts_with("codex-") {
+            let mut thread = self.codex_threads.lock().unwrap().get(&m.target).cloned();
+            if thread.is_none() {
+                self.refresh_codex().await;
+                thread = self.codex_threads.lock().unwrap().get(&m.target).cloned();
+            }
+            if let Some(t) = thread {
+                match codex::start_turn(&t, &text).await {
+                    Ok(()) => return true,
+                    Err(e) => log(format!("codex push -> {} failed: {e}", m.target)),
+                }
+            }
+        }
+        false
+    }
+
+    /// Open Codex threads, also remembered as codex-<id> -> thread id.
+    async fn refresh_codex(&self) -> Vec<codex::Thread> {
+        let threads = codex::threads().await;
+        let mut map = self.codex_threads.lock().unwrap();
+        for t in &threads {
+            map.insert(codex::name_for(&t.id), t.id.clone());
+        }
+        threads
+    }
+
     fn proxy(&self, name: &str) -> Option<Arc<Proxy>> {
         self.proxies.read().unwrap().get(name).cloned()
     }
@@ -194,6 +276,12 @@ impl Hub {
                         r#where: cwd.rsplit('/').next().unwrap_or_default().into(),
                     });
                 }
+            }
+        }
+        for t in self.refresh_codex().await {
+            let name = codex::name_for(&t.id);
+            if !out.iter().any(|a| a.name == name) {
+                out.push(Agent { name, harness: "codex".into(), status: t.status, r#where: t.cwd.rsplit('/').next().unwrap_or_default().into() });
             }
         }
         let cut = now_ms() - SOCKET_AGENT_TTL_MS;
@@ -244,6 +332,8 @@ pub async fn run(me: Identity, default_target: String) -> Result<()> {
         rosters: Mutex::default(),
         local_ask_by_intercom: Mutex::default(),
         socket_agents: Mutex::default(),
+        watchers: Mutex::default(),
+        codex_threads: Mutex::default(),
         proxies: RwLock::default(),
         system: RwLock::default(),
         intercom_in: Mutex::default(),
@@ -534,9 +624,9 @@ async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &st
     let proxy = hub.proxy(from_addr).or_else(|| hub.proxy(contact));
     if let Some(proxy) = proxy {
         let header = if ask {
-            format!("[letagents · verified {from_addr}] ASK: reply to this message to answer it")
+            format!("[letagents · verified {from_addr}] ASK")
         } else {
-            format!("[letagents · verified {from_addr}] to answer, send to \"{from_addr}\"")
+            format!("[letagents · verified {from_addr}]")
         };
         if let Ok(s) = proxy.send(&target, &format!("{header}\n\n{}", inner.body), None, ask).await {
             if s.delivered {
@@ -550,12 +640,15 @@ async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &st
         }
     }
     let _ = from_agent;
-    hub.spool(
-        Spooled { id: inner.id.clone(), from: from_addr.to_string(), kind: inner.kind.clone(), target: target.clone(), text: inner.body.clone(), ts: inner.ts, reply_to: None },
-        if ask { Some(contact) } else { None },
-    );
-    log(format!("in {} from {from_addr} -> {target}: queued", inner.kind));
-    hub.receipt(contact, &inner.id, "queued", &target).await;
+    let pushed = hub
+        .hand_over(
+            Spooled { id: inner.id.clone(), from: from_addr.to_string(), kind: inner.kind.clone(), target: target.clone(), text: inner.body.clone(), ts: inner.ts, reply_to: None },
+            if ask { Some(contact) } else { None },
+        )
+        .await;
+    let status = if pushed { "pushed" } else { "queued" };
+    log(format!("in {} from {from_addr} -> {target}: {status}", inner.kind));
+    hub.receipt(contact, &inner.id, status, &target).await;
 }
 
 async fn on_reply(hub: &Hub, from_addr: &str, inner: Inner) {
@@ -573,23 +666,23 @@ async fn resolve_waiter(hub: &Hub, waiter: Option<Waiter>, reply: Spooled) {
                 None => false,
             };
             if !ok {
-                hub.spool(Spooled { target: local_from, ..reply }, None);
+                hub.hand_over(Spooled { target: local_from, ..reply }, None).await;
             }
             log(format!("in reply from {from} -> intercom asker: {}", if ok { "delivered" } else { "queued" }));
         }
         Some(Waiter::Socket { asker, tx }) => {
             if let Err(reply) = tx.send(reply) {
-                hub.spool(Spooled { target: asker, ..reply }, None);
+                hub.hand_over(Spooled { target: asker, ..reply }, None).await;
             }
             log(format!("in reply from {from} -> socket asker"));
         }
         Some(Waiter::Spool { asker }) => {
-            hub.spool(Spooled { target: asker.clone(), ..reply }, None);
-            log(format!("in reply from {from} -> queued for {asker}"));
+            let pushed = hub.hand_over(Spooled { target: asker.clone(), ..reply }, None).await;
+            log(format!("in reply from {from} -> {} for {asker}", if pushed { "pushed" } else { "queued" }));
         }
         None => {
-            hub.spool(reply, None);
-            log(format!("in reply from {from}: no open ask; queued for {}", hub.default_target));
+            let pushed = hub.hand_over(reply, None).await;
+            log(format!("in reply from {from}: no open ask; {} for {}", if pushed { "pushed" } else { "queued" }, hub.default_target));
         }
     }
 }
@@ -649,7 +742,7 @@ async fn hello(hub: &Hub, inner: Inner, sender: Peer) {
         None => false,
     };
     if !delivered {
-        hub.spool(Spooled { id: inner.id, from: SYSTEM_SESSION.into(), kind: "notice".into(), target: hub.default_target.clone(), text: note, ts: inner.ts, reply_to: None }, None);
+        hub.hand_over(Spooled { id: inner.id, from: SYSTEM_SESSION.into(), kind: "notice".into(), target: hub.default_target.clone(), text: note, ts: inner.ts, reply_to: None }, None).await;
     }
 }
 
@@ -677,12 +770,19 @@ struct Req {
     wait_ms: u64,
     #[serde(default)]
     timeout_ms: u64,
+    /// Codex thread id of the MCP server's session
+    #[serde(default)]
+    thread: Option<String>,
 }
 
 async fn serve_socket(hub: Arc<Hub>, conn: UnixStream) {
     let (mut rd, mut wr) = conn.into_split();
     while let Ok(v) = read_frame(&mut rd).await {
         let resp = match serde_json::from_value::<Req>(v) {
+            Ok(req) if req.op == "watch" => {
+                let Some(me) = req.as_.clone() else { break };
+                return watch(hub, me, req.harness, rd, wr).await;
+            }
             Ok(req) => {
                 let id = req.id.clone();
                 let mut r = handle(&hub, req).await.unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() }));
@@ -694,6 +794,54 @@ async fn serve_socket(hub: Arc<Hub>, conn: UnixStream) {
         if wr.write_all(&frame(&resp)).await.is_err() {
             break;
         }
+    }
+}
+
+/// A `watch` connection: the MCP server of a session that can take pushed messages (Claude Code). We send
+/// `{"push": {id, from, kind, text}}`; it answers `{"ok": bool}` once it has posted the text into its session.
+async fn watch(hub: Arc<Hub>, me: String, harness: Option<String>, mut rd: tokio::net::unix::OwnedReadHalf, mut wr: tokio::net::unix::OwnedWriteHalf) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Push>();
+    hub.watchers.lock().unwrap().insert(me.clone(), tx.clone());
+    hub.touch_socket_agent(&me, harness.as_deref());
+    if wr.write_all(&frame(&json!({ "ok": true }))).await.is_ok() {
+        log(format!("{me} watching: messages are pushed into its session"));
+        // Mail that waited for this agent: push it now (in the background; the acks come through this loop).
+        let waiting: Vec<Spooled> = {
+            let mut s = hub.spool.lock().unwrap();
+            let (mine, rest): (Vec<_>, Vec<_>) = s.msgs.drain(..).partition(|m| m.target == me);
+            s.msgs = rest;
+            if !mine.is_empty() {
+                hub.save_spool(&s);
+            }
+            mine
+        };
+        if !waiting.is_empty() {
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                for m in waiting {
+                    if !hub.push(&m).await {
+                        hub.spool(m, None);
+                    }
+                }
+            });
+        }
+        while let Some(p) = rx.recv().await {
+            let posted = async {
+                wr.write_all(&frame(&json!({ "push": p.msg }))).await.ok()?;
+                let v = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut rd)).await.ok()?.ok()?;
+                Some(v["ok"] == json!(true))
+            }
+            .await;
+            let _ = p.done.send(posted == Some(true));
+            if posted.is_none() {
+                break;
+            }
+        }
+    }
+    let mut w = hub.watchers.lock().unwrap();
+    if w.get(&me).is_some_and(|t| t.same_channel(&tx)) {
+        w.remove(&me);
+        log(format!("{me} stopped watching"));
     }
 }
 
@@ -727,9 +875,9 @@ async fn deliver_local(hub: &Hub, from: &str, agent: &str, kind: &str, text: &st
     let system = hub.system.read().unwrap().clone();
     if let Some(sys) = system {
         let header = if kind == "ask" {
-            format!("[letagents · {from_addr}] ASK: reply to this message to answer it")
+            format!("[letagents · {from_addr}] ASK")
         } else {
-            format!("[letagents · {from_addr}] to answer, send to \"{from}\"")
+            format!("[letagents · {from_addr}]")
         };
         if let Ok(s) = sys.send(agent, &format!("{header}\n\n{text}"), None, kind == "ask").await {
             if s.delivered {
@@ -741,12 +889,15 @@ async fn deliver_local(hub: &Hub, from: &str, agent: &str, kind: &str, text: &st
             }
         }
     }
-    hub.spool(
-        Spooled { id: id.to_string(), from: from_addr, kind: kind.into(), target: agent.into(), text: text.into(), ts: now_ms(), reply_to: None },
-        if kind == "ask" { Some("") } else { None },
-    );
-    log(format!("local {kind} {from} -> {agent}: queued"));
-    json!({ "status": "queued", "detail": agent })
+    let pushed = hub
+        .hand_over(
+            Spooled { id: id.to_string(), from: from_addr, kind: kind.into(), target: agent.into(), text: text.into(), ts: now_ms(), reply_to: None },
+            if kind == "ask" { Some("") } else { None },
+        )
+        .await;
+    let status = if pushed { "pushed" } else { "queued" };
+    log(format!("local {kind} {from} -> {agent}: {status}"));
+    json!({ "status": status, "detail": agent })
 }
 
 async fn handle(hub: &Hub, r: Req) -> Result<Value> {
@@ -755,9 +906,15 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
         hub.touch_socket_agent(&me_as, r.harness.as_deref());
     }
     match r.op.as_str() {
-        "hello" => Ok(json!({ "ok": true, "as": me_as, "machine": hub.me.name })),
+        "hello" => {
+            if let Some(t) = &r.thread {
+                hub.codex_threads.lock().unwrap().insert(me_as.clone(), t.clone());
+            }
+            Ok(json!({ "ok": true, "as": me_as, "machine": hub.me.name }))
+        }
         "bye" => {
             hub.socket_agents.lock().unwrap().remove(&me_as);
+            hub.watchers.lock().unwrap().remove(&me_as);
             log(format!("{me_as} left"));
             Ok(json!({ "ok": true }))
         }
@@ -886,4 +1043,24 @@ pub async fn call(req: Value) -> Result<Value> {
         bail!("{}", v["error"].as_str().unwrap_or("daemon error"));
     }
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(from: &str, kind: &str) -> Spooled {
+        Spooled { id: "id1".into(), from: from.into(), kind: kind.into(), target: "t".into(), text: "body".into(), ts: 0, reply_to: Some("q1".into()) }
+    }
+
+    #[test]
+    fn headers_name_the_sender_once() {
+        assert_eq!(render(&msg("laptop/tester", "send"), "laptop"), "[letagents · laptop/tester]\n\nbody");
+        assert_eq!(render(&msg("devbox/planner", "send"), "laptop"), "[letagents · verified devbox/planner]\n\nbody");
+        assert_eq!(render(&msg("devbox/planner", "ask"), "laptop"), "[letagents · verified devbox/planner] ASK id1\n\nbody");
+        assert_eq!(render(&msg("laptop/tester", "reply"), "laptop"), "[letagents · laptop/tester] REPLY q1\n\nbody");
+        for kind in ["send", "ask", "reply"] {
+            assert_eq!(render(&msg("devbox/planner", kind), "laptop").matches("devbox/planner").count(), 1);
+        }
+    }
 }

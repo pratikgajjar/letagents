@@ -1,5 +1,6 @@
 //! letagents: end-to-end sealed messages between AI agents across devices. The relay stays clueless.
 
+mod codex;
 mod crypto;
 mod daemon;
 mod intercom;
@@ -411,8 +412,8 @@ async fn main() -> Result<()> {
             for m in v["messages"].as_array().cloned().unwrap_or_default() {
                 if hook {
                     let s = |k: &str| m[k].as_str().unwrap_or_default().to_string();
-                    let how = if s("kind") == "ask" { format!("ASK, answer with: letagents reply {} \"<text>\"", s("id")) } else { s("kind") };
-                    println!("[letagents · verified {}] {how}\n{}\n", s("from"), s("text"));
+                    let how = if s("kind") == "ask" { format!(" ASK {}", s("id")) } else { String::new() };
+                    println!("[letagents · {}]{how}\n{}\n", s("from"), s("text"));
                 } else {
                     println!("{m}");
                 }

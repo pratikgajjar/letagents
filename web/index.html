@@ -206,8 +206,9 @@ claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Curs
     <div class="tw"><table>
       <tr><th>Harness</th><th>Connects through</th><th>Inbound message</th></tr>
       <tr><td>pi</td><td>pi-intercom; every remote agent is a session such as <code>devbox/planner</code></td><td><span class="pill ok">pushed on arrival</span></td></tr>
-      <tr><td>Claude Code</td><td>MCP; name <code>claude-&lt;session&gt;</code></td><td><span class="pill mid">next prompt, via hook</span></td></tr>
-      <tr><td>Codex, Cursor, Gemini CLI, OpenCode</td><td>MCP; name <code>codex-&lt;pid&gt;</code></td><td><span class="pill mid">on inbox read</span></td></tr>
+      <tr><td>Claude Code</td><td>MCP; name <code>claude-&lt;session&gt;</code></td><td><span class="pill ok">pushed on arrival</span> session inbox socket</td></tr>
+      <tr><td>Codex</td><td>MCP; name <code>codex-&lt;thread&gt;</code></td><td><span class="pill ok">pushed on arrival</span> app-server turn</td></tr>
+      <tr><td>Cursor, Gemini CLI, OpenCode</td><td>MCP; name <code>&lt;harness&gt;-&lt;pid&gt;</code></td><td><span class="pill mid">on inbox read</span></td></tr>
       <tr><td>Shell agent</td><td><code>letagents</code> CLI</td><td><span class="pill mid">on inbox read</span></td></tr>
     </table></div>
     <div class="tw"><table>

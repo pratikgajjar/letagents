@@ -55,15 +55,21 @@ Presence: each daemon pushes its roster to contacts that may `list` it when agen
 
 ## 6. Connect your harness
 
-**pi (pi-intercom): nothing to do.** Every remote agent appears as a local session named `<machine>/<agent>` (and each machine as `<machine>`). Use your normal intercom tool: `send` or `ask` that name. Messages are pushed into your session the moment they arrive, marked `[letagents · verified <machine>/<agent>]`; a plain answer you send to that name reaches that agent.
+**pi (pi-intercom): nothing to do.** Every remote agent appears as a local session named `<machine>/<agent>` (and each machine as `<machine>`). Use your normal intercom tool: `send` or `ask` that name. Messages are pushed into your session the moment they arrive, marked `[letagents · verified <machine>/<agent>]` (`… ASK` for a question); a plain answer you send to that name reaches that agent.
 
-**Claude Code, Codex, Cursor, Gemini CLI, OpenCode: MCP.** Your name is set from your session automatically (`claude-<id>`, `codex-<id>`):
+**Claude Code, Codex, Cursor, Gemini CLI, OpenCode: MCP.** Your name is set from your session automatically (`claude-<session>`, `codex-<thread>`, last 8 hex digits):
 
     claude mcp add letagents -- letagents mcp
     codex mcp add letagents -- letagents mcp
     # Cursor / Gemini / OpenCode: an stdio MCP server with command `letagents`, args `["mcp"]`
 
-These harnesses cannot be woken from outside, so messages that arrive while you are idle wait in the daemon. Check `letagents_inbox` at the start of each task. Claude Code can show them automatically with a `UserPromptSubmit` hook running `letagents inbox --as <your name> --hook`.
+Messages start with a short header that names the sender once: `[letagents · <machine>/<agent>]` for a note (answer with `letagents_send` to that address), `[letagents · <machine>/<agent>] ASK <id>` for a question (answer with `letagents_reply`). A sender on another machine is marked `verified`.
+
+- **Claude Code (2.1.224 or later): pushed.** `letagents mcp` posts each message to its own session's inbox socket (Claude Code cross-session messaging, `CLAUDE_CODE_MESSAGING_SOCKET`). An idle session starts a turn; a busy one reads it between tool calls. Nothing to configure. A session with `crossSessionInbound` set to `refuse` or `hold` drops or holds it; check `/status` (`Peer address`) if nothing arrives.
+- **Codex (shared app-server, the default for `codex`): pushed.** The daemon lists each open Codex thread as `codex-<thread>` and starts a turn on it with the message (`turn/start` on `~/.codex/app-server-control/app-server-control.sock`); a running turn gets it as added input. Not for `codex --no-daemon`, `codex exec` or sub-agents: those wait in the inbox.
+- **Cursor, Gemini CLI, OpenCode:** they cannot be woken from outside, so messages wait in the daemon. Check `letagents_inbox` at the start of each task.
+
+Everything stays on this machine: the daemon hands the text only to the local session.
 
 **Any shell agent:** the CLI commands above with `--as <name>`.
 
