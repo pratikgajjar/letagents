@@ -14,6 +14,10 @@
 //!
 //! Primitives over the relay (all sealed): send, ask, reply, list -> roster (who is online), unsolicited
 //! roster (presence), receipt (pushed / queued / refused), hello (contact request). Groups fan out locally.
+//!
+//! Routing never guesses a live session: a send/ask must name an agent (or come back to the agent that
+//! last wrote to its sender, or use the contact's configured session); a reply goes to whoever asked, by
+//! ask id, even after a restart. Anything else is refused, or waits in the machine inbox.
 
 use crate::codex;
 use crate::crypto::{now_ms, open, Identity, Inner, Peer};
@@ -33,6 +37,10 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 /// The local intercom session that receives notices (contact requests).
 pub const SYSTEM_SESSION: &str = "letagents";
+/// The machine inbox: callers with no agent name (plain CLI) and replies nobody asked for. Never pushed.
+pub const MACHINE_INBOX: &str = "inbox";
+/// A remote agent's plain send goes back to the local agent that wrote to it within this window.
+const LAST_PEER_TTL_MS: i64 = 60 * 60 * 1000;
 const ROSTER_REFRESH: Duration = Duration::from_secs(600);
 const PRESENCE_CHECK: Duration = Duration::from_secs(30);
 /// MCP agents heartbeat every 60 s; one missed by 3 minutes has left.
@@ -65,6 +73,19 @@ struct Spool {
     msgs: Vec<Spooled>,
     /// inbound ask id -> (contact, received at); answerable with the `reply` op
     answerable: BTreeMap<String, (String, i64)>,
+    /// our ask id -> who asked; routes a reply that comes after a timeout or a daemon restart
+    #[serde(default)]
+    asks: BTreeMap<String, Asker>,
+}
+
+/// The local agent that sent an ask. `proxy` is set when it asked through pi-intercom: then `agent` is
+/// its intercom session id and the reply goes back through that proxy session.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct Asker {
+    agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy: Option<String>,
+    ts: i64,
 }
 
 /// One agent on some machine, as shared in a roster.
@@ -112,15 +133,16 @@ enum ReceiptWaiter {
 
 struct Hub {
     me: Identity,
-    default_target: String,
+    /// Local agent told about contact requests (they also wait in the machine inbox)
+    notify: Option<String>,
     spool: Mutex<Spool>,
     waiters: Mutex<HashMap<String, Waiter>>,
     receipts: Mutex<HashMap<String, ReceiptWaiter>>,
     list_waiters: Mutex<HashMap<String, oneshot::Sender<Vec<Agent>>>>,
     /// intercom message id of an ask we delivered locally -> (contact, remote ask id)
     remote_ask_by_local: Mutex<HashMap<String, (String, String)>>,
-    /// remote agent address -> the local session that last wrote to it (routes its plain sends back)
-    last_peer: Mutex<HashMap<String, String>>,
+    /// remote agent address -> (the local session that last wrote to it, when); routes its plain sends back
+    last_peer: Mutex<HashMap<String, (String, i64)>>,
     /// contact -> its last roster
     rosters: Mutex<HashMap<String, Vec<Agent>>>,
     /// intercom message id of a local ask pushed to a pi session -> our ask id
@@ -187,6 +209,7 @@ impl Hub {
         let cut = now_ms() - crate::crypto::MAX_AGE_MS;
         s.msgs.retain(|x| x.ts >= cut);
         s.answerable.retain(|_, (_, t)| *t >= cut);
+        s.asks.retain(|_, a| a.ts >= cut);
         s.msgs.push(m);
         self.save_spool(&s);
         drop(s);
@@ -233,6 +256,16 @@ impl Hub {
                 }
             }
         }
+        // A pi session (e.g. a late reply to an ask sent from the CLI inside pi). Asks need their intercom
+        // link and go through deliver/deliver_local instead.
+        if m.kind != "ask" && m.target != MACHINE_INBOX {
+            let system = self.system.read().unwrap().clone();
+            if let Some(sys) = system {
+                if let Ok(s) = sys.send(&m.target, &text, None, false).await {
+                    return s.delivered;
+                }
+            }
+        }
         false
     }
 
@@ -244,6 +277,28 @@ impl Hub {
             map.insert(codex::name_for(&t.id), t.id.clone());
         }
         threads
+    }
+
+    /// Remember who sent ask `id`, so its reply finds them after a timeout or a restart.
+    fn record_ask(&self, id: &str, agent: &str, proxy: Option<&str>) {
+        let mut s = self.spool.lock().unwrap();
+        let cut = now_ms() - crate::crypto::MAX_AGE_MS;
+        s.asks.retain(|_, a| a.ts >= cut);
+        s.asks.insert(id.to_string(), Asker { agent: agent.to_string(), proxy: proxy.map(str::to_string), ts: now_ms() });
+        self.save_spool(&s);
+    }
+
+    fn take_ask(&self, id: &str) -> Option<Asker> {
+        let mut s = self.spool.lock().unwrap();
+        let a = s.asks.remove(id);
+        if a.is_some() {
+            self.save_spool(&s);
+        }
+        a
+    }
+
+    fn set_last_peer(&self, remote: String, local: &str) {
+        self.last_peer.lock().unwrap().insert(remote, (local.to_string(), now_ms()));
     }
 
     fn proxy(&self, name: &str) -> Option<Arc<Proxy>> {
@@ -308,7 +363,7 @@ impl Hub {
     }
 }
 
-pub async fn run(me: Identity, default_target: String) -> Result<()> {
+pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
     let sock = socket_path();
     if UnixStream::connect(&sock).await.is_ok() {
         bail!("a letagents daemon is already running ({})", sock.display());
@@ -322,7 +377,7 @@ pub async fn run(me: Identity, default_target: String) -> Result<()> {
     }
     let hub = Arc::new(Hub {
         me,
-        default_target,
+        notify,
         spool: Mutex::new(store::read("spool.json")),
         waiters: Mutex::default(),
         receipts: Mutex::default(),
@@ -339,7 +394,7 @@ pub async fn run(me: Identity, default_target: String) -> Result<()> {
         intercom_in: Mutex::default(),
         arrived: Notify::new(),
     });
-    log(format!("socket {} ready; default target \"{}\"", sock.display(), hub.default_target));
+    log(format!("socket {} ready; contact requests -> {}", sock.display(), hub.notify.as_deref().unwrap_or(MACHINE_INBOX)));
 
     tokio::spawn(intercom_manager(hub.clone()));
     tokio::spawn(relay_inbox(hub.clone()));
@@ -445,7 +500,7 @@ async fn from_intercom(hub: &Hub, m: Local) {
         if let Some(ask_id) = ask {
             let from = if m.from_name.is_empty() { m.from_id.clone() } else { m.from_name.clone() };
             let waiter = hub.waiters.lock().unwrap().remove(&ask_id);
-            let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&from, &hub.me.name), kind: "reply".into(), target: hub.default_target.clone(), text: m.text, ts: now_ms(), reply_to: Some(ask_id) };
+            let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&from, &hub.me.name), kind: "reply".into(), target: MACHINE_INBOX.into(), text: m.text, ts: now_ms(), reply_to: Some(ask_id) };
             resolve_waiter(hub, waiter, reply).await;
         }
         return;
@@ -471,12 +526,13 @@ async fn from_intercom(hub: &Hub, m: Local) {
     }
     let kind = if m.expects_reply { "ask" } else { "send" };
     if let Some(a) = &to_agent {
-        hub.last_peer.lock().unwrap().insert(agent_addr(a, &contact), m.from_id.clone());
+        hub.set_last_peer(agent_addr(a, &contact), &m.from_id);
     }
     let dest = to_agent.clone().map(|a| agent_addr(&a, &contact)).unwrap_or_else(|| contact.clone());
     match hub.seal_send(&contact, kind, &body, None, Some(from_agent), to_agent).await {
         Ok(id) => {
             if kind == "ask" {
+                hub.record_ask(&id, &m.from_id, Some(&m.proxy));
                 hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Intercom { proxy: m.proxy.clone(), local_from: m.from_id.clone(), local_msg: m.id.clone() });
             }
             hub.receipts.lock().unwrap().insert(id, ReceiptWaiter::Intercom { proxy: m.proxy.clone(), local_from: m.from_id.clone(), to: dest.clone() });
@@ -576,7 +632,18 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     }
     let to_local = match inner.kind.as_str() {
         "list" | "reply" => "*".to_string(),
-        _ => target_for(&hub, &inner, &sender),
+        _ => match target_for(&hub, &inner, &sender) {
+            Some(t) => t,
+            None => {
+                // No agent named and no conversation to continue: never guess a session.
+                if let Ok((contact, _)) = store::contact_of(&sender) {
+                    let detail = format!("name an agent: send to {}/<agent> (see letagents list)", hub.me.name);
+                    log(format!("REFUSED {} {} from {contact}/{from_agent}: no agent named", inner.kind, inner.id));
+                    hub.receipt(&contact, &inner.id, "refused", &detail).await;
+                }
+                return;
+            }
+        },
     };
     let (contact, _) = match store::authorize(&sender, &inner.kind, &from_agent, &to_local) {
         Ok(x) => x,
@@ -603,19 +670,20 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     }
 }
 
-/// The local agent a send/ask is for: explicit target, else whoever last wrote to that remote agent,
-/// else the contact's default, else the daemon's default.
-fn target_for(hub: &Hub, inner: &Inner, sender: &Peer) -> String {
-    if let Some(t) = &inner.to_agent {
-        return t.clone();
+/// The local agent a send/ask is for: the named agent, else the local agent that wrote to that remote
+/// agent in the last hour, else the contact's configured session. None: the sender must name an agent.
+fn target_for(hub: &Hub, inner: &Inner, sender: &Peer) -> Option<String> {
+    if let Some(t) = inner.to_agent.as_ref().filter(|t| !t.is_empty()) {
+        return Some(t.clone());
     }
     let contact = store::contact_of(sender).ok();
     if let (Some((name, _)), Some(fa)) = (&contact, &inner.from_agent) {
-        if let Some(local) = hub.last_peer.lock().unwrap().get(&agent_addr(fa, name)).cloned() {
-            return local;
+        let cut = now_ms() - LAST_PEER_TTL_MS;
+        if let Some((local, _)) = hub.last_peer.lock().unwrap().get(&agent_addr(fa, name)).filter(|(_, t)| *t >= cut).cloned() {
+            return Some(local);
         }
     }
-    contact.and_then(|(_, c)| c.session).unwrap_or_else(|| hub.default_target.clone())
+    contact.and_then(|(_, c)| c.session)
 }
 
 async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &str, target: String, inner: Inner) {
@@ -653,16 +721,28 @@ async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &st
 
 async fn on_reply(hub: &Hub, from_addr: &str, inner: Inner) {
     let waiter = inner.reply_to.as_ref().and_then(|r| hub.waiters.lock().unwrap().remove(r));
-    let reply = Spooled { id: inner.id.clone(), from: from_addr.into(), kind: "reply".into(), target: hub.default_target.clone(), text: inner.body.clone(), ts: inner.ts, reply_to: inner.reply_to.clone() };
+    let reply = Spooled { id: inner.id.clone(), from: from_addr.into(), kind: "reply".into(), target: MACHINE_INBOX.into(), text: inner.body.clone(), ts: inner.ts, reply_to: inner.reply_to.clone() };
     resolve_waiter(hub, waiter, reply).await;
 }
 
+/// Hand a reply to whoever asked: the live waiter, else the asker recorded by ask id (after a timeout or
+/// a restart), else the machine inbox. Never a session that did not ask.
 async fn resolve_waiter(hub: &Hub, waiter: Option<Waiter>, reply: Spooled) {
     let from = reply.from.clone();
+    let asker = reply.reply_to.as_deref().and_then(|r| hub.take_ask(r));
+    let waiter = waiter.or_else(|| {
+        asker.map(|a| match a.proxy {
+            Some(proxy) => Waiter::Intercom { proxy, local_from: a.agent, local_msg: String::new() },
+            None => Waiter::Spool { asker: a.agent },
+        })
+    });
     match waiter {
         Some(Waiter::Intercom { proxy, local_from, local_msg }) => {
+            // Without the original intercom message (after a restart), say which ask this answers.
+            let text = if local_msg.is_empty() { format!("[letagents · verified {from}] REPLY {}\n\n{}", reply.reply_to.as_deref().unwrap_or("?"), reply.text) } else { reply.text.clone() };
+            let link = Some(local_msg.as_str()).filter(|s| !s.is_empty());
             let ok = match hub.proxy(&proxy) {
-                Some(p) => p.send(&local_from, &reply.text, Some(&local_msg), false).await.map(|s| s.delivered).unwrap_or(false),
+                Some(p) => p.send(&local_from, &text, link, false).await.map(|s| s.delivered).unwrap_or(false),
                 None => false,
             };
             if !ok {
@@ -681,8 +761,8 @@ async fn resolve_waiter(hub: &Hub, waiter: Option<Waiter>, reply: Spooled) {
             log(format!("in reply from {from} -> {} for {asker}", if pushed { "pushed" } else { "queued" }));
         }
         None => {
-            let pushed = hub.hand_over(reply, None).await;
-            log(format!("in reply from {from}: no open ask; {} for {}", if pushed { "pushed" } else { "queued" }, hub.default_target));
+            hub.spool(Spooled { target: MACHINE_INBOX.into(), ..reply }, None);
+            log(format!("in reply from {from}: no open ask; queued in the machine inbox"));
         }
     }
 }
@@ -708,8 +788,8 @@ async fn on_receipt(hub: &Hub, contact: &str, inner: Inner) {
     if status == "refused" {
         // A refused ask will never get a reply: answer it now so the asker is not left waiting.
         let waiter = hub.waiters.lock().unwrap().remove(&of);
-        if waiter.is_some() {
-            let reply = Spooled { id: inner.id, from: contact.into(), kind: "reply".into(), target: hub.default_target.clone(), text: format!("[letagents] refused: {detail}"), ts: now_ms(), reply_to: Some(of) };
+        if waiter.is_some() || hub.spool.lock().unwrap().asks.contains_key(&of) {
+            let reply = Spooled { id: inner.id, from: contact.into(), kind: "reply".into(), target: MACHINE_INBOX.into(), text: format!("[letagents] refused: {detail}"), ts: now_ms(), reply_to: Some(of) };
             resolve_waiter(hub, waiter, reply).await;
         }
     }
@@ -736,13 +816,16 @@ async fn hello(hub: &Hub, inner: Inner, sender: Peer) {
         "[letagents] contact request {rid} from an agent calling itself \"{}\", safety number {}.\nAsk your human to confirm this safety number with them, then run: letagents contact accept {rid} <name>",
         req.name, req.safety
     );
+    // The machine inbox always keeps it; the --notify agent (if any) is also told.
+    hub.spool(Spooled { id: inner.id.clone(), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: MACHINE_INBOX.into(), text: note.clone(), ts: inner.ts, reply_to: None }, None);
+    let Some(notify) = hub.notify.clone() else { return };
     let system = hub.system.read().unwrap().clone();
     let delivered = match system {
-        Some(p) => p.send(&hub.default_target, &note, None, false).await.map(|s| s.delivered).unwrap_or(false),
+        Some(p) => p.send(&notify, &note, None, false).await.map(|s| s.delivered).unwrap_or(false),
         None => false,
     };
     if !delivered {
-        hub.hand_over(Spooled { id: inner.id, from: SYSTEM_SESSION.into(), kind: "notice".into(), target: hub.default_target.clone(), text: note, ts: inner.ts, reply_to: None }, None).await;
+        hub.hand_over(Spooled { id: format!("{}:{notify}", inner.id), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: notify, text: note, ts: inner.ts, reply_to: None }, None).await;
     }
 }
 
@@ -901,7 +984,7 @@ async fn deliver_local(hub: &Hub, from: &str, agent: &str, kind: &str, text: &st
 }
 
 async fn handle(hub: &Hub, r: Req) -> Result<Value> {
-    let me_as = r.as_.clone().unwrap_or_else(|| hub.default_target.clone());
+    let me_as = r.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| MACHINE_INBOX.into());
     if r.as_.is_some() && r.op != "bye" {
         hub.touch_socket_agent(&me_as, r.harness.as_deref());
     }
@@ -922,7 +1005,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             let s = hub.spool.lock().unwrap();
             Ok(json!({
                 "ok": true, "name": hub.me.name, "address": hub.me.peer().address(true),
-                "safety": hub.me.peer().safety_number(), "default_target": hub.default_target,
+                "safety": hub.me.peer().safety_number(), "notify": hub.notify,
                 "intercom": hub.system.read().unwrap().is_some(), "waiting": s.msgs.len(),
             }))
         }
@@ -942,6 +1025,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                         let id = uuid::Uuid::new_v4().to_string();
                         if r.op == "ask" {
                             let (tx, rx) = oneshot::channel();
+                            hub.record_ask(&id, &me_as, None);
                             hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Socket { asker: me_as.clone(), tx });
                             replies.push((t.clone(), id.clone(), rx));
                         }
@@ -953,7 +1037,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                     }
                     To::Contact { contact, agent } => {
                         if let Some(a) = &agent {
-                            hub.last_peer.lock().unwrap().insert(agent_addr(a, &contact), me_as.clone());
+                            hub.set_last_peer(agent_addr(a, &contact), &me_as);
                         }
                         hub.seal_send(&contact, &r.op, &r.text, None, Some(me_as.clone()), agent).await?
                     }
@@ -963,6 +1047,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                 hub.receipts.lock().unwrap().insert(id.clone(), ReceiptWaiter::Socket(rtx));
                 if r.op == "ask" {
                     let (tx, rx) = oneshot::channel();
+                    hub.record_ask(&id, &me_as, None);
                     hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Socket { asker: me_as.clone(), tx });
                     replies.push((t.clone(), id.clone(), rx));
                 }
@@ -1000,7 +1085,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             if contact.is_empty() {
                 // A local ask: hand the reply straight to the asker.
                 let waiter = hub.waiters.lock().unwrap().remove(&r.msg);
-                let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&me_as, &hub.me.name), kind: "reply".into(), target: hub.default_target.clone(), text: r.text.clone(), ts: now_ms(), reply_to: Some(r.msg.clone()) };
+                let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&me_as, &hub.me.name), kind: "reply".into(), target: MACHINE_INBOX.into(), text: r.text.clone(), ts: now_ms(), reply_to: Some(r.msg.clone()) };
                 resolve_waiter(hub, waiter, reply).await;
                 return Ok(json!({ "ok": true, "msg_id": r.msg }));
             }

@@ -48,13 +48,17 @@ When someone says hello to you, you get a contact request (`letagents requests`)
 
 ## 4. Start the daemon (once per machine)
 
-    letagents service install --target <session-name>   # launchd on macOS, systemd --user on Linux
+    letagents service install --notify <session-name>   # launchd on macOS, systemd --user on Linux
 
-The daemon holds the keys and the relay connection. `--target` is the local session that gets messages with no explicit session (pi: `planner`; otherwise your agent's name, e.g. `claude`).
+The daemon holds the keys and the relay connection. `--notify` (optional) is the local session told about contact requests. They also wait in the machine inbox: `letagents inbox`. The daemon never puts other agents' mail into a session they did not name.
 
 ## 5. Addresses and primitives
 
-Each agent has an address `<machine>/<agent>`, for example `devbox/planner`. `<machine>` alone reaches that machine's default agent; `@<group>` reaches a group. An agent on your own machine is reached by its bare name (or `<your machine>/<agent>`), without the relay.
+Each agent has an address `<machine>/<agent>`, for example `devbox/planner`. `@<group>` reaches a group. An agent on your own machine is reached by its bare name (or `<your machine>/<agent>`), without the relay.
+
+Always name the agent. A send or ask to `<machine>` alone is refused (`name an agent`), unless an agent on that machine wrote to you in the last hour: then it goes back to that agent. A reply goes to the agent that asked, by ask id, also after a timeout or a daemon restart.
+
+Without `--as`, the CLI uses `$LETAGENTS_AS`, else the harness session it runs in (Claude Code, Codex, pi), else the machine inbox (`inbox`).
 
 | Primitive | CLI | MCP tool |
 |---|---|---|

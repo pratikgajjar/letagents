@@ -56,7 +56,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Send a message to <machine>/<agent>, <machine> or @<group>
+    /// Send a message to <machine>/<agent> or @<group>
     Send {
         to: String,
         text: String,
@@ -64,7 +64,7 @@ enum Cmd {
         #[arg(long = "as")]
         as_: Option<String>,
     },
-    /// Ask and wait for the reply: <machine>/<agent>, <machine> or @<group>
+    /// Ask and wait for the reply: <machine>/<agent> or @<group>
     Ask {
         to: String,
         text: String,
@@ -97,16 +97,18 @@ enum Cmd {
     Check,
     /// Run the daemon (normally via `letagents service install`)
     Daemon {
-        /// Local agent that gets messages with no explicit target
-        #[arg(long, default_value = "planner")]
-        target: String,
+        /// Local agent told about contact requests (they also wait in `letagents inbox`).
+        /// Never gets other agents' mail: senders must name an agent.
+        #[arg(long, alias = "target")]
+        notify: Option<String>,
     },
     /// Install, remove or show the background service (launchd on macOS, systemd --user on Linux)
     Service {
         #[arg(value_parser = ["install", "uninstall", "status"])]
         action: String,
-        #[arg(long, default_value = "planner")]
-        target: String,
+        /// Local agent told about contact requests
+        #[arg(long, alias = "target")]
+        notify: Option<String>,
     },
     /// MCP server over stdio for Claude Code, Codex, Cursor, Gemini CLI, OpenCode
     Mcp {
@@ -382,14 +384,14 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Send { to, text, as_ } => {
-            let v = daemon::call(json!({ "op": "send", "to": to, "text": text, "as": as_ })).await?;
+            let v = daemon::call(json!({ "op": "send", "to": to, "text": text, "as": as_.or_else(mcp::session_name) })).await?;
             for s in v["sent"].as_array().cloned().unwrap_or_default() {
                 println!("{} -> {} {}", s["to"].as_str().unwrap_or_default(), s["receipt"]["status"].as_str().unwrap_or_default(), s["receipt"]["detail"].as_str().unwrap_or_default());
             }
             Ok(())
         }
         Cmd::Ask { to, text, as_, timeout } => {
-            let v = daemon::call(json!({ "op": "ask", "to": to, "text": text, "as": as_, "timeout_ms": timeout * 1000 })).await?;
+            let v = daemon::call(json!({ "op": "ask", "to": to, "text": text, "as": as_.or_else(mcp::session_name), "timeout_ms": timeout * 1000 })).await?;
             let replies = v["replies"].as_array().cloned().unwrap_or_default();
             let mut missing = false;
             for r in &replies {
@@ -408,7 +410,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Inbox { as_, wait, hook } => {
-            let v = daemon::call(json!({ "op": "inbox", "as": as_, "wait_ms": wait * 1000 })).await?;
+            let v = daemon::call(json!({ "op": "inbox", "as": as_.or_else(mcp::session_name), "wait_ms": wait * 1000 })).await?;
             for m in v["messages"].as_array().cloned().unwrap_or_default() {
                 if hook {
                     let s = |k: &str| m[k].as_str().unwrap_or_default().to_string();
@@ -421,7 +423,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Reply { id, text, as_ } => {
-            let v = daemon::call(json!({ "op": "reply", "msg": id, "text": text, "as": as_ })).await?;
+            let v = daemon::call(json!({ "op": "reply", "msg": id, "text": text, "as": as_.or_else(mcp::session_name) })).await?;
             println!("sent {}", v["msg_id"].as_str().unwrap_or_default());
             Ok(())
         }
@@ -435,8 +437,8 @@ async fn main() -> Result<()> {
             }
             relay::ack(&me, &msgs.iter().map(|m| m.seq).collect::<Vec<_>>()).await
         }
-        Cmd::Daemon { target } => daemon::run(store::identity()?, target).await,
-        Cmd::Service { action, target } => service::run(&action, &target),
+        Cmd::Daemon { notify } => daemon::run(store::identity()?, notify).await,
+        Cmd::Service { action, notify } => service::run(&action, notify.as_deref()),
         Cmd::Mcp { as_ } => mcp::run(as_).await,
     }
 }

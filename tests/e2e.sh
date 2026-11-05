@@ -69,7 +69,8 @@ la bob contact add alice "$A_ADDR" >/dev/null || die "bob adds alice"
 la alice daemon >"$T/alice.log" 2>&1 &
 PIDS+=($!)
 la bob daemon >"$T/bob.log" 2>&1 &
-PIDS+=($!)
+BOB=$!
+PIDS+=($BOB)
 wait_for 30 grep -q "inbox: connected" "$T/alice.log" || die "alice daemon did not connect"
 wait_for 30 grep -q "inbox: connected" "$T/bob.log" || die "bob daemon did not connect"
 
@@ -117,6 +118,35 @@ out=$(la bob send @team "standup at 10" --as worker 2>&1)
 if [ "$(grep -c -- "-> queued" <<<"$out")" = 2 ]; then ok "group send: 2 receipts queued"; else fail "group send receipts ($out)"; fi
 check "group send: alice/ops got it" inbox_has alice ops "standup at 10"
 check "group send: alice/planner got it" inbox_has alice planner "standup at 10"
+
+# ---------- routing: never guess a session ----------
+# A send or ask that names no agent is refused with a hint; nothing lands in a session or the machine inbox.
+out=$(la bob send alice "plain note" --as worker 2>&1)
+check "plain send refused: name an agent ($out)" grep -q "alice -> refused name an agent: send to alice/<agent>" <<<"$out"
+start=$(date +%s)
+out=$(la bob ask alice "plain question" --as worker --timeout 30 2>&1)
+took=$(($(date +%s) - start))
+if grep -q "refused: name an agent" <<<"$out" && [ "$took" -lt 10 ]; then ok "plain ask refused in ${took}s"; else fail "plain ask (took ${took}s, output: $out)"; fi
+la alice inbox --wait 1 >"$T/machine.out" 2>&1
+check "plain mail not in alice's machine inbox" bash -c "! grep -q plain '$T/machine.out'"
+# A plain send to the machine of an agent that wrote to us goes back to that agent (bob/worker wrote to
+# alice/planner above).
+la alice send bob "plain answer to worker" --as planner >/dev/null 2>&1
+check "plain send continues the conversation: bob/worker got it" inbox_has bob worker "plain answer to worker"
+# A reply after the ask timed out and the asker's daemon restarted still reaches the asker, by ask id.
+la bob ask alice/planner "late question" --as worker --timeout 2 >/dev/null 2>&1
+LATE=$(ask_id)
+kill -- "-$BOB" 2>/dev/null || kill "$BOB"
+wait "$BOB" 2>/dev/null
+la bob daemon >>"$T/bob.log" 2>&1 &
+BOB=$!
+PIDS+=($BOB)
+wait_for 30 logged "$T/bob.log" "inbox: connected" -ge 2 || die "bob daemon did not reconnect after restart"
+if [ -n "$LATE" ] && la alice reply "$LATE" "late answer" --as planner >/dev/null 2>&1; then
+  check "late reply after restart: bob/worker got it" inbox_has bob worker "late answer"
+else
+  fail "late reply (ask id: $LATE)"
+fi
 
 # ---------- replayed and tampered envelopes ----------
 # Capture one real sealed envelope (bob's hello to alice) with a one-shot fake relay, then post it to the

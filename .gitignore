@@ -3,3 +3,4 @@ relay/build/
 .wrangler/
 node_modules/
 .dev.vars
+.context/

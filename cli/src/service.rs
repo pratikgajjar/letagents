@@ -10,8 +10,10 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").expect("HOME"))
 }
 
-pub fn run(action: &str, target: &str) -> Result<()> {
+pub fn run(action: &str, notify: Option<&str>) -> Result<()> {
     let exe = std::env::current_exe()?;
+    let notify_xml = notify.map(|n| format!("<string>--notify</string><string>{n}</string>")).unwrap_or_default();
+    let notify_arg = notify.map(|n| format!(" --notify {n}")).unwrap_or_default();
     let log = crate::store::home().join("daemon.log");
     if cfg!(target_os = "macos") {
         let plist = home().join(format!("Library/LaunchAgents/{LABEL}.plist"));
@@ -26,7 +28,7 @@ pub fn run(action: &str, target: &str) -> Result<()> {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>{LABEL}</string>
-  <key>ProgramArguments</key><array><string>{}</string><string>daemon</string><string>--target</string><string>{target}</string></array>
+  <key>ProgramArguments</key><array><string>{}</string><string>daemon</string>{notify_xml}</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -60,7 +62,7 @@ pub fn run(action: &str, target: &str) -> Result<()> {
                 std::fs::write(
                     &unit,
                     format!(
-                        "[Unit]\nDescription=letagents daemon\n\n[Service]\nExecStart={} daemon --target {target}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n",
+                        "[Unit]\nDescription=letagents daemon\n\n[Service]\nExecStart={} daemon{notify_arg}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n",
                         exe.display()
                     ),
                 )?;

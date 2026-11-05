@@ -2,6 +2,14 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 8. Never guess the receiving agent
+
+**Decision:** the daemon has no default agent for mail. A send or ask must name an agent (`<machine>/<agent>`), continue a conversation (an agent there wrote to the sender in the last hour), or match the contact's configured `--session`. Anything else is refused with `name an agent`. A reply goes to the asker by ask id; the link is stored in `spool.json` for 48 h, so it survives a timeout and a restart. A reply with no known ask, and a CLI call with no agent name, use the machine inbox (`inbox`), which is never pushed. `daemon --target` became `--notify`: it only gets contact requests.
+
+**Why:** `--target` sent every unnamed message into one live session. Notes meant for other sessions (a note from `devbox/planner`, a reply from `devbox/docs-bot`) landed in the wrong agent's context. A misrouted message is worse than a refused one: the wrong agent may act on it, and the sender thinks it arrived. A refusal tells the sender at once how to fix the address.
+
+**Revisit when:** a machine runs one agent only. Then `contact add --session <agent>` gives it a default per contact, without a global one.
+
 ## 7. No hosted wake-up event adapter yet (stdio MCP is not broken)
 
 **Decision:** this change adds no event adapter for waking hosted agents. The stdio MCP server stays request/response tools (`letagents_list` / `send` / `ask` / `inbox` / `reply`), with the existing push paths unchanged: Claude Code sessions get messages posted into their session inbox socket (`claude_watch`), and Codex sessions get a new turn started by the daemon.

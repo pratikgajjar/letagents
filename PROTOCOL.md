@@ -54,6 +54,8 @@ Groups are local: the sender seals one copy per member.
 
 Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop stale (`ts` older than 48 h) and already-seen `id`s, then apply local contact rules: unknown senders are dropped (a `hello` becomes a pending request), a known id with a different box key is refused, each contact has an allow list of kinds (`send`, `ask`, `reply`, `list`), and optional per-agent rules (`from` their agent, `to` our agent, `*` and `prefix*` globs) are checked in order: the first match decides. `list` is decided only by rules whose `to` is `*`.
 
+Routing on the receiver: a `send` or `ask` goes to `to_agent`. With no `to_agent`, it goes to the local agent that last wrote to the sender's agent (within 1 hour), else to the contact's configured session, else it is refused with a `receipt` whose detail starts `name an agent`. A `reply` goes to the local agent that sent the ask with id `reply_to`; the receiver keeps that link for 48 h. A reply with no known ask waits in the machine inbox. The daemon never delivers into a session the sender did not name or answer.
+
 ## What the relay keeps
 
 - Per mailbox: SHA-256(drop), last login time, and undelivered envelopes.
