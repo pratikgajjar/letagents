@@ -97,6 +97,8 @@ struct Hub {
     last_peer: Mutex<HashMap<String, String>>,
     /// contact -> its last roster
     rosters: Mutex<HashMap<String, Vec<Agent>>>,
+    /// intercom message id of a local ask pushed to a pi session -> our ask id
+    local_ask_by_intercom: Mutex<HashMap<String, String>>,
     /// local agents seen on the socket (MCP, CLI): name -> (harness, last seen)
     socket_agents: Mutex<HashMap<String, (String, i64)>>,
     /// contact proxies ("devbox") and remote-agent proxies ("devbox/planner")
@@ -114,13 +116,21 @@ fn agent_addr(agent: &str, contact: &str) -> String {
 /// `<contact>/<agent>`, `<contact>`, or `@<group>`.
 enum To {
     Contact { contact: String, agent: Option<String> },
+    /// An agent on this machine: delivered locally, never through the relay.
+    Local(String),
     Group(String),
 }
 
-fn parse_to(s: &str) -> Result<To> {
+fn parse_to(s: &str, me: &str, local: &[String]) -> Result<To> {
     let s = s.trim();
     if let Some(g) = s.strip_prefix('@') {
         return Ok(To::Group(g.to_string()));
+    }
+    if let Some(agent) = s.strip_prefix(&format!("{me}/")) {
+        return Ok(To::Local(agent.to_string()));
+    }
+    if local.iter().any(|a| a == s) {
+        return Ok(To::Local(s.to_string()));
     }
     let contacts = store::contacts();
     if contacts.contains_key(s) {
@@ -231,6 +241,7 @@ pub async fn run(me: Identity, default_target: String) -> Result<()> {
         remote_ask_by_local: Mutex::default(),
         last_peer: Mutex::default(),
         rosters: Mutex::default(),
+        local_ask_by_intercom: Mutex::default(),
         socket_agents: Mutex::default(),
         proxies: RwLock::default(),
         system: RwLock::default(),
@@ -338,6 +349,14 @@ async fn sync_agent_proxies(hub: &Arc<Hub>, contact: &str, agents: &[Agent]) {
 /// A local pi agent sent or asked a contact or remote-agent session, or replied to a forwarded ask.
 async fn from_intercom(hub: &Hub, m: Local) {
     if m.proxy == SYSTEM_SESSION {
+        // A pi agent answered a local ask that we pushed into its session.
+        let ask = m.reply_to.as_ref().and_then(|r| hub.local_ask_by_intercom.lock().unwrap().remove(r));
+        if let Some(ask_id) = ask {
+            let from = if m.from_name.is_empty() { m.from_id.clone() } else { m.from_name.clone() };
+            let waiter = hub.waiters.lock().unwrap().remove(&ask_id);
+            let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&from, &hub.me.name), kind: "reply".into(), target: hub.default_target.clone(), text: m.text, ts: now_ms(), reply_to: Some(ask_id) };
+            resolve_waiter(hub, waiter, reply).await;
+        }
         return;
     }
     let from_agent = if m.from_name.is_empty() { m.from_id.clone() } else { m.from_name.clone() };
@@ -701,6 +720,34 @@ async fn directory(hub: &Hub, only: Option<&str>, wait: Duration) -> Value {
             "groups": groups.keys().map(|g| format!("@{g}")).collect::<Vec<_>>() })
 }
 
+/// Deliver to an agent on this machine: push into its pi session, else queue it in its inbox.
+async fn deliver_local(hub: &Hub, from: &str, agent: &str, kind: &str, text: &str, id: &str) -> Value {
+    let from_addr = agent_addr(from, &hub.me.name);
+    let system = hub.system.read().unwrap().clone();
+    if let Some(sys) = system {
+        let header = if kind == "ask" {
+            format!("[letagents · {from_addr}] ASK: reply to this message to answer it")
+        } else {
+            format!("[letagents · {from_addr}] to answer, send to \"{from}\"")
+        };
+        if let Ok(s) = sys.send(agent, &format!("{header}\n\n{text}"), None, kind == "ask").await {
+            if s.delivered {
+                if kind == "ask" {
+                    hub.local_ask_by_intercom.lock().unwrap().insert(s.id, id.to_string());
+                }
+                log(format!("local {kind} {from} -> {agent}: pushed via intercom"));
+                return json!({ "status": "pushed", "detail": agent });
+            }
+        }
+    }
+    hub.spool(
+        Spooled { id: id.to_string(), from: from_addr, kind: kind.into(), target: agent.into(), text: text.into(), ts: now_ms(), reply_to: None },
+        if kind == "ask" { Some("") } else { None },
+    );
+    log(format!("local {kind} {from} -> {agent}: queued"));
+    json!({ "status": "queued", "detail": agent })
+}
+
 async fn handle(hub: &Hub, r: Req) -> Result<Value> {
     let me_as = r.as_.clone().unwrap_or_else(|| hub.default_target.clone());
     if r.as_.is_some() {
@@ -718,18 +765,36 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
         }
         "list" => Ok(directory(hub, r.contact.as_deref(), Duration::from_millis(if r.wait_ms == 0 { 6000 } else { r.wait_ms.min(20_000) })).await),
         "send" | "ask" => {
-            let targets: Vec<String> = match parse_to(&r.to)? {
+            let local: Vec<String> = hub.local_roster().await.into_iter().map(|a| a.name).collect();
+            let targets: Vec<String> = match parse_to(&r.to, &hub.me.name, &local)? {
                 To::Group(g) => store::groups().get(&g).cloned().ok_or_else(|| anyhow!("no group @{g}"))?,
-                To::Contact { .. } => vec![r.to.clone()],
+                _ => vec![r.to.clone()],
             };
             let mut results = vec![];
             let mut replies = vec![];
             for t in targets {
-                let To::Contact { contact, agent } = parse_to(&t)? else { bail!("groups cannot contain groups") };
-                if let Some(a) = &agent {
-                    hub.last_peer.lock().unwrap().insert(agent_addr(a, &contact), me_as.clone());
-                }
-                let id = hub.seal_send(&contact, &r.op, &r.text, None, Some(me_as.clone()), agent).await?;
+                let id = match parse_to(&t, &hub.me.name, &local)? {
+                    To::Group(_) => bail!("groups cannot contain groups"),
+                    To::Local(agent) => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        if r.op == "ask" {
+                            let (tx, rx) = oneshot::channel();
+                            hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Socket { asker: me_as.clone(), tx });
+                            replies.push((t.clone(), id.clone(), rx));
+                        }
+                        let receipt = deliver_local(hub, &me_as, &agent, &r.op, &r.text, &id).await;
+                        let (rtx, rrx) = oneshot::channel();
+                        let _ = rtx.send(receipt);
+                        results.push((t, id, rrx));
+                        continue;
+                    }
+                    To::Contact { contact, agent } => {
+                        if let Some(a) = &agent {
+                            hub.last_peer.lock().unwrap().insert(agent_addr(a, &contact), me_as.clone());
+                        }
+                        hub.seal_send(&contact, &r.op, &r.text, None, Some(me_as.clone()), agent).await?
+                    }
+                };
                 log(format!("out {} -> {t} (from socket, as {me_as})", r.op));
                 let (rtx, rrx) = oneshot::channel();
                 hub.receipts.lock().unwrap().insert(id.clone(), ReceiptWaiter::Socket(rtx));
@@ -769,6 +834,13 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
         "reply" => {
             let (contact, _) = hub.spool.lock().unwrap().answerable.remove(&r.msg).ok_or_else(|| anyhow!("no open ask with id {}", r.msg))?;
             hub.save_spool(&hub.spool.lock().unwrap());
+            if contact.is_empty() {
+                // A local ask: hand the reply straight to the asker.
+                let waiter = hub.waiters.lock().unwrap().remove(&r.msg);
+                let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&me_as, &hub.me.name), kind: "reply".into(), target: hub.default_target.clone(), text: r.text.clone(), ts: now_ms(), reply_to: Some(r.msg.clone()) };
+                resolve_waiter(hub, waiter, reply).await;
+                return Ok(json!({ "ok": true, "msg_id": r.msg }));
+            }
             let id = hub.seal_send(&contact, "reply", &r.text, Some(r.msg.clone()), Some(me_as), None).await?;
             log(format!("out reply -> {contact} (from socket)"));
             Ok(json!({ "ok": true, "msg_id": id }))

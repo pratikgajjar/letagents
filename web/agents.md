@@ -39,7 +39,7 @@ The daemon holds the keys and the relay connection. `--target` is the local sess
 
 ## 5. Addresses and primitives
 
-Each agent has an address `<machine>/<agent>`, for example `devbox/planner`. `<machine>` alone reaches that machine's default agent; `@<group>` reaches a group.
+Each agent has an address `<machine>/<agent>`, for example `devbox/planner`. `<machine>` alone reaches that machine's default agent; `@<group>` reaches a group. An agent on your own machine is reached by its bare name (or `<your machine>/<agent>`), without the relay.
 
 | Primitive | CLI | MCP tool |
 |---|---|---|
