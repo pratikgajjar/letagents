@@ -15,6 +15,22 @@ const INDEX_HTML: &str = include_str!("../../web/index.html");
 const AGENTS_MD: &str = include_str!("../../web/agents.md");
 const PROTOCOL_MD: &str = include_str!("../../PROTOCOL.md");
 const INSTALL_SH: &str = include_str!("../../web/install.sh");
+const LLMS_TXT: &str = include_str!("../../web/llms.txt");
+const LLMS_FULL: &str = concat!(include_str!("../../web/llms.txt"), "\n\n---\n\n", include_str!("../../web/agents.md"), "\n\n---\n\n", include_str!("../../PROTOCOL.md"));
+const ROBOTS: &str = include_str!("../../web/robots.txt");
+const SITEMAP: &str = include_str!("../../web/sitemap.xml");
+const SECURITY_TXT: &str = include_str!("../../web/security.txt");
+
+/// Agents fetching "/" with curl, fetch or an explicit text/markdown Accept get the setup guide as markdown.
+fn wants_markdown(req: &Request) -> bool {
+    let h = |k: &str| req.headers().get(k).ok().flatten().unwrap_or_default().to_ascii_lowercase();
+    let (accept, ua) = (h("accept"), h("user-agent"));
+    if accept.contains("text/markdown") || accept.contains("text/x-markdown") {
+        return true;
+    }
+    !accept.contains("text/html")
+        && ["curl/", "wget/", "httpie", "python-", "go-http-client", "node", "undici", "axios", "okhttp", "reqwest"].iter().any(|a| ua.contains(a))
+}
 
 // Cost design: nothing is kept for long, every mailbox is small, idle mailboxes delete themselves,
 // abusive IPs are stopped at the edge before a Durable Object wakes, and keepalive pings are
@@ -61,8 +77,18 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let path = url.path().to_string();
     match (req.method(), path.as_str()) {
-        (Method::Get, "/") | (Method::Get, "/index.html") => return page(INDEX_HTML, "text/html; charset=utf-8"),
-        (Method::Get, "/agents.md") | (Method::Get, "/llms.txt") => return page(AGENTS_MD, "text/markdown; charset=utf-8"),
+        (Method::Get, "/") | (Method::Get, "/index.html") => {
+            let mut r = if wants_markdown(&req) { page(AGENTS_MD, "text/markdown; charset=utf-8")? } else { page(INDEX_HTML, "text/html; charset=utf-8")? };
+            r.headers_mut().set("vary", "Accept, User-Agent")?;
+            r.headers_mut().set("link", r#"</agents.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="alternate"; type="text/plain""#)?;
+            return Ok(r);
+        }
+        (Method::Get, "/agents.md") => return page(AGENTS_MD, "text/markdown; charset=utf-8"),
+        (Method::Get, "/llms.txt") => return page(LLMS_TXT, "text/plain; charset=utf-8"),
+        (Method::Get, "/llms-full.txt") => return page(LLMS_FULL, "text/plain; charset=utf-8"),
+        (Method::Get, "/robots.txt") => return page(ROBOTS, "text/plain; charset=utf-8"),
+        (Method::Get, "/sitemap.xml") => return page(SITEMAP, "application/xml; charset=utf-8"),
+        (Method::Get, "/.well-known/security.txt") | (Method::Get, "/security.txt") => return page(SECURITY_TXT, "text/plain; charset=utf-8"),
         (Method::Get, "/protocol.md") => return page(PROTOCOL_MD, "text/markdown; charset=utf-8"),
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),

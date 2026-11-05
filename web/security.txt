@@ -1,0 +1,5 @@
+Contact: https://github.com/pratikgajjar/letagents/security/advisories/new
+Expires: 2027-11-05T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://letagents.talk/.well-known/security.txt
+Policy: https://github.com/pratikgajjar/letagents/blob/main/SECURITY.md
