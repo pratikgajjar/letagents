@@ -32,6 +32,13 @@ cargo build --release --manifest-path cli/Cargo.toml
 cd relay && npx wrangler dev        # local relay on :8787 (needs worker-build)
 ```
 
+## Deploy
+
+`.github/workflows/ship.yml` runs on every push to `main`:
+
+- Tests pass, then the relay deploys to Cloudflare and is smoke-tested at https://letagents.talk/health.
+- If the version in `cli/Cargo.toml` has no `v<version>` tag yet, the CLI binaries build and a GitHub release publishes. To release, bump that version.
+
 ## Running costs
 
 The relay is designed to stay inside Cloudflare's free tier, where usage beyond the limits is refused, never billed:
