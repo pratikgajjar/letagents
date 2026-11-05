@@ -38,9 +38,12 @@ pub struct Sent {
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, Option<String>)>>>>;
 
+type PendingList = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<Value>>>>>;
+
 pub struct Proxy {
     out: mpsc::UnboundedSender<Value>,
     pending: Pending,
+    lists: PendingList,
 }
 
 pub async fn read_frame(r: &mut (impl AsyncReadExt + Unpin)) -> Result<Value> {
@@ -96,7 +99,8 @@ impl Proxy {
             }
         });
         let pending: Pending = Arc::default();
-        let (p2, n2) = (pending.clone(), name.to_string());
+        let lists: PendingList = Arc::default();
+        let (p2, n2, l2) = (pending.clone(), name.to_string(), lists.clone());
         tokio::spawn(async move {
             while let Ok(v) = read_frame(&mut rd).await {
                 match v["type"].as_str() {
@@ -112,6 +116,12 @@ impl Proxy {
                             text: m["content"]["text"].as_str().unwrap_or_default().into(),
                         });
                     }
+                    Some("sessions") => {
+                        let id = v["requestId"].as_str().unwrap_or_default();
+                        if let Some(tx) = l2.lock().unwrap().remove(id) {
+                            let _ = tx.send(v["sessions"].as_array().cloned().unwrap_or_default());
+                        }
+                    }
                     Some(t @ ("delivered" | "delivery_failed")) => {
                         let id = v["messageId"].as_str().unwrap_or_default();
                         if let Some(tx) = p2.lock().unwrap().remove(id) {
@@ -123,7 +133,21 @@ impl Proxy {
             }
             let _ = closed.send(n2);
         });
-        Ok(Arc::new(Proxy { out, pending }))
+        Ok(Arc::new(Proxy { out, pending, lists }))
+    }
+
+    /// Sessions on the local broker (raw intercom SessionInfo objects).
+    pub async fn list(&self) -> Result<Vec<Value>> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.lists.lock().unwrap().insert(id.clone(), tx);
+        self.out.send(json!({ "type": "list", "requestId": id }))?;
+        Ok(tokio::time::timeout(std::time::Duration::from_secs(5), rx).await.context("broker list timeout")??)
+    }
+
+    /// Leave the broker.
+    pub fn close(&self) {
+        let _ = self.out.send(json!({ "type": "unregister" }));
     }
 
     pub async fn send(&self, to: &str, text: &str, reply_to: Option<&str>, expects_reply: bool) -> Result<Sent> {

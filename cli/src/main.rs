@@ -10,8 +10,9 @@ mod store;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use crypto::{now_ms, open, seal, Identity, Inner, Peer, KINDS};
-use store::{Contact, Seen};
+use crypto::{now_ms, open, seal, Identity, Inner, Peer, RULE_KINDS};
+use serde_json::json;
+use store::{AgentRule, Contact, Seen};
 
 #[derive(Parser)]
 #[command(name = "letagents", version, about = "End-to-end sealed messages between AI agents. Agents: read https://letagents.talk/agents.md")]
@@ -22,34 +23,56 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create this device's keys (~/.letagents/identity.json, mode 0600)
+    /// Create this machine's keys (~/.letagents/identity.json, mode 0600)
     Init { name: String },
-    /// Show this device's address and safety number
+    /// Show this machine's address and safety number
     Whoami,
     /// Print a short invite to paste to another agent or human
     Invite,
-    /// Manage trusted contacts and their rules
+    /// Manage trusted contacts (machines)
     Contact {
         #[command(subcommand)]
         cmd: ContactCmd,
     },
-    /// List pending contact requests (hellos from unknown agents)
+    /// Per-agent rules for a contact
+    Rule {
+        #[command(subcommand)]
+        cmd: RuleCmd,
+    },
+    /// Named groups of agents (fan-out sends)
+    Group {
+        #[command(subcommand)]
+        cmd: GroupCmd,
+    },
+    /// List pending contact requests
     Requests,
     /// Send our address to a contact so they can add us
     Hello { contact: String },
-    /// Ask a contact and wait for the reply (needs the daemon)
-    Ask {
-        contact: String,
-        text: String,
+    /// List every agent you can reach: local agents and agents on each contact's machine (needs the daemon)
+    List {
+        /// Only this contact
+        contact: Option<String>,
         #[arg(long)]
-        session: Option<String>,
-        /// Your local session name (replies that arrive late go to its inbox)
+        json: bool,
+    },
+    /// Send a message to <machine>/<agent>, <machine> or @<group>
+    Send {
+        to: String,
+        text: String,
+        /// Your local agent name
+        #[arg(long = "as")]
+        as_: Option<String>,
+    },
+    /// Ask and wait for the reply: <machine>/<agent>, <machine> or @<group>
+    Ask {
+        to: String,
+        text: String,
         #[arg(long = "as")]
         as_: Option<String>,
         #[arg(long, default_value_t = 50)]
         timeout: u64,
     },
-    /// Read and remove messages waiting for a local agent (needs the daemon)
+    /// Read and remove messages waiting for a local agent
     Inbox {
         #[arg(long = "as")]
         as_: Option<String>,
@@ -60,33 +83,20 @@ enum Cmd {
         #[arg(long)]
         hook: bool,
     },
-    /// Answer an ask from the inbox by its id (needs the daemon)
-    Reply { id: String, text: String },
+    /// Answer an ask from the inbox by its id
+    Reply {
+        id: String,
+        text: String,
+        #[arg(long = "as")]
+        as_: Option<String>,
+    },
     /// Show daemon status
     Status,
-    /// MCP server over stdio for Claude Code, Codex, Cursor, Gemini CLI, OpenCode
-    Mcp {
-        /// This agent's session name; messages for it land in its inbox
-        #[arg(long = "as", default_value = "planner")]
-        as_: String,
-    },
-    /// Send a sealed message
-    Send {
-        contact: String,
-        text: String,
-        /// Remote local session to deliver to (e.g. planner)
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long, default_value = "send")]
-        kind: String,
-    },
-    /// Fetch waiting messages once over plain HTTPS, print them as JSON lines, and ack them
+    /// Fetch waiting mail once over HTTPS without a daemon; prints JSON lines
     Check,
-    /// Stay connected and print verified messages as JSON lines
-    Listen,
-    /// Bridge the local pi-intercom broker and the relay (run as a service)
+    /// Run the daemon (normally via `letagents service install`)
     Daemon {
-        /// Local session that receives messages with no explicit session
+        /// Local agent that gets messages with no explicit target
         #[arg(long, default_value = "planner")]
         target: String,
     },
@@ -97,17 +107,24 @@ enum Cmd {
         #[arg(long, default_value = "planner")]
         target: String,
     },
+    /// MCP server over stdio for Claude Code, Codex, Cursor, Gemini CLI, OpenCode
+    Mcp {
+        /// Agent name; default derives from the harness session (e.g. claude-6bf79665)
+        #[arg(long = "as")]
+        as_: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum ContactCmd {
-    /// Trust an agent. Compare its safety number with its human first.
+    /// Trust a machine. Compare its safety number with its human first.
     Add {
         name: String,
         address: String,
-        #[arg(long, default_value = "send,ask,reply")]
+        /// What its agents may do: send, ask, reply, list
+        #[arg(long, default_value = "send,ask,reply,list")]
         allow: String,
-        /// Default local session for its messages
+        /// Default local agent for its messages
         #[arg(long)]
         session: Option<String>,
     },
@@ -115,15 +132,48 @@ enum ContactCmd {
     Accept {
         request: String,
         name: String,
-        #[arg(long, default_value = "send,ask,reply")]
+        #[arg(long, default_value = "send,ask,reply,list")]
         allow: String,
     },
     Ls,
     Rm { name: String },
 }
 
+#[derive(Subcommand)]
+enum RuleCmd {
+    /// Allow kinds between their agent (--from) and our agent (--to); `*` and `prefix*` match
+    Add {
+        contact: String,
+        #[arg(long, default_value = "*")]
+        from: String,
+        #[arg(long, default_value = "*")]
+        to: String,
+        #[arg(long)]
+        allow: String,
+    },
+    Ls,
+    /// Remove rule number N (from `rule ls`). Rules are checked in order; the first match decides.
+    Rm { contact: String, n: usize },
+}
+
+#[derive(Subcommand)]
+enum GroupCmd {
+    /// Create or replace a group: members are <machine>/<agent> or <machine>
+    Set { name: String, members: Vec<String> },
+    Ls,
+    Rm { name: String },
+}
+
 /// Seal `body` for `contact` and deliver it. Returns the message id.
-pub async fn compose_and_send(me: &Identity, contact: &str, kind: &str, body: &str, reply_to: Option<String>, session: Option<String>) -> Result<String> {
+pub async fn compose_and_send(
+    me: &Identity,
+    contact: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<String>,
+    from_agent: Option<String>,
+    to_agent: Option<String>,
+) -> Result<String> {
     let c = store::contacts().get(contact).cloned().with_context(|| format!("no contact {contact}"))?;
     let to = Peer::parse(&c.address)?;
     let inner = Inner {
@@ -134,7 +184,8 @@ pub async fn compose_and_send(me: &Identity, contact: &str, kind: &str, body: &s
         id: uuid::Uuid::new_v4().to_string(),
         kind: kind.into(),
         reply_to,
-        session,
+        from_agent,
+        to_agent,
         body: body.into(),
     };
     relay::deliver(&to, seal(me, &to, &inner)?).await?;
@@ -143,19 +194,23 @@ pub async fn compose_and_send(me: &Identity, contact: &str, kind: &str, body: &s
 
 fn parse_allow(s: &str) -> Result<Vec<String>> {
     let v: Vec<String> = s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
-    if let Some(bad) = v.iter().find(|k| !KINDS[..3].contains(&k.as_str())) {
-        bail!("--allow takes send,ask,reply (got {bad})");
+    if let Some(bad) = v.iter().find(|k| !RULE_KINDS.contains(&k.as_str())) {
+        bail!("allow takes {} (got {bad})", RULE_KINDS.join(","));
     }
     Ok(v)
 }
 
 fn add_contact(name: &str, address: &str, allow: &str, session: Option<String>) -> Result<Peer> {
+    if name.contains('@') || name.contains('/') {
+        bail!("contact names cannot contain @ or /");
+    }
     let p = Peer::parse(address)?;
     if p.drop.is_none() {
         bail!("this address has no drop secret (4th part); ask for the full address");
     }
     let mut all = store::contacts();
-    all.insert(name.into(), Contact { address: address.trim().into(), allow: parse_allow(allow)?, session, added: now_ms() });
+    let rules = all.get(name).map(|c| c.rules.clone()).unwrap_or_default();
+    all.insert(name.into(), Contact { address: address.trim().into(), allow: parse_allow(allow)?, session, added: now_ms(), rules });
     store::write("contacts.json", &all)?;
     Ok(p)
 }
@@ -167,20 +222,27 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                 return eprintln!("dropped replay {}", inner.id);
             }
             let _ = store::write("seen.json", seen);
-            match store::authorize(&sender, &inner.kind) {
+            let from_agent = inner.from_agent.clone().unwrap_or_else(|| "agent".into());
+            let to = inner.to_agent.clone().unwrap_or_else(|| "*".into());
+            match store::authorize(&sender, &inner.kind, &from_agent, &to) {
                 Ok((name, _)) => println!(
                     "{}",
-                    serde_json::json!({ "from": name, "kind": inner.kind, "id": inner.id, "reply_to": inner.reply_to, "session": inner.session, "ts": inner.ts, "body": inner.body })
+                    json!({ "from": format!("{name}/{from_agent}"), "kind": inner.kind, "id": inner.id, "reply_to": inner.reply_to, "to": inner.to_agent, "ts": inner.ts, "body": inner.body })
                 ),
                 Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") => {
                     let (rid, req) = store::record_request(&sender, &inner.body, &inner.id, inner.ts);
                     eprintln!("contact request {rid} from \"{}\" ({}); accept with your human's approval: letagents contact accept {rid} <name>", req.name, req.safety);
                 }
-                Err(r) => eprintln!("REJECTED {} {}: {r}", inner.kind, inner.id),
+                Err(r) => eprintln!("refused {} {}: {r}", inner.kind, inner.id),
             }
         }
         Err(e) => eprintln!("dropped envelope: {e}"),
     }
+}
+
+fn print_json(v: &serde_json::Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(v)?);
+    Ok(())
 }
 
 #[tokio::main]
@@ -193,27 +255,23 @@ async fn main() -> Result<()> {
         Cmd::Whoami => whoami(),
         Cmd::Invite => {
             let me = store::identity()?;
+            let a = me.peer().address(true);
             println!(
-                "letagents invite from \"{}\"\naddress: {}\nsafety number: {}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add {} {} && letagents hello {}",
-                me.name,
-                me.peer().address(true),
+                "letagents invite from \"{n}\"\naddress: {a}\nsafety number: {}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add {n} {a} && letagents hello {n}",
                 me.peer().safety_number(),
-                me.name,
-                me.peer().address(true),
-                me.name
+                n = me.name
             );
             Ok(())
         }
         Cmd::Contact { cmd } => match cmd {
             ContactCmd::Add { name, address, allow, session } => {
                 let p = add_contact(&name, &address, &allow, session)?;
-                println!("added {name}; safety number {} (confirm it with their human over a channel you trust)", p.safety_number());
+                println!("added {name}; safety number {} (confirm it with their human over a channel you trust); restart the daemon to load it", p.safety_number());
                 Ok(())
             }
             ContactCmd::Accept { request, name, allow } => {
                 let mut reqs = store::requests();
                 let r = reqs.remove(&request).with_context(|| format!("no request {request}; see `letagents requests`"))?;
-                bail_if_no_drop(&r.address)?;
                 add_contact(&name, &r.address, &allow, None)?;
                 store::write("requests.json", &reqs)?;
                 println!("accepted {name} ({}); restart the daemon to load it", r.safety);
@@ -222,7 +280,7 @@ async fn main() -> Result<()> {
             ContactCmd::Ls => {
                 for (n, c) in store::contacts() {
                     let p = Peer::parse(&c.address)?;
-                    println!("{n:<16} {}  allow={}{}", p.safety_number(), c.allow.join(","), c.session.map(|s| format!(" session={s}")).unwrap_or_default());
+                    println!("{n:<16} {}  allow={}  rules={}", p.safety_number(), c.allow.join(","), c.rules.len());
                 }
                 Ok(())
             }
@@ -234,9 +292,64 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Cmd::Rule { cmd } => {
+            let mut all = store::contacts();
+            match cmd {
+                RuleCmd::Add { contact, from, to, allow } => {
+                    let c = all.get_mut(&contact).with_context(|| format!("no contact {contact}"))?;
+                    c.rules.push(AgentRule { from, to, allow: parse_allow(&allow)? });
+                    store::write("contacts.json", &all)?;
+                    println!("rule added; rules apply at once");
+                }
+                RuleCmd::Ls => {
+                    for (n, c) in &all {
+                        if c.rules.is_empty() {
+                            println!("{n}: no rules (contact allow list applies to all agents: {})", c.allow.join(","));
+                        }
+                        for (i, r) in c.rules.iter().enumerate() {
+                            println!("{n} #{i}: {n}/{} -> {} may {}", r.from, r.to, r.allow.join(","));
+                        }
+                    }
+                }
+                RuleCmd::Rm { contact, n } => {
+                    let c = all.get_mut(&contact).with_context(|| format!("no contact {contact}"))?;
+                    if n >= c.rules.len() {
+                        bail!("no rule #{n}");
+                    }
+                    c.rules.remove(n);
+                    store::write("contacts.json", &all)?;
+                    println!("rule removed");
+                }
+            }
+            Ok(())
+        }
+        Cmd::Group { cmd } => {
+            let mut g = store::groups();
+            match cmd {
+                GroupCmd::Set { name, members } => {
+                    if members.is_empty() {
+                        bail!("a group needs members");
+                    }
+                    g.insert(name.trim_start_matches('@').into(), members);
+                    store::write("groups.json", &g)?;
+                    println!("group set");
+                }
+                GroupCmd::Ls => {
+                    for (n, m) in &g {
+                        println!("@{n}: {}", m.join(" "));
+                    }
+                }
+                GroupCmd::Rm { name } => {
+                    g.remove(name.trim_start_matches('@'));
+                    store::write("groups.json", &g)?;
+                    println!("group removed");
+                }
+            }
+            Ok(())
+        }
         Cmd::Requests => {
             for (id, r) in store::requests() {
-                println!("{id}  \"{}\"  {}  {}", r.name, r.safety, r.address);
+                println!("{id}  \"{}\"  {}", r.name, r.safety);
             }
             Ok(())
         }
@@ -244,19 +357,74 @@ async fn main() -> Result<()> {
             let me = store::identity()?;
             // A hello carries our full address (with drop) so the other side can write back.
             let to = Peer::parse(&store::contacts().get(&contact).with_context(|| format!("no contact {contact}"))?.address)?;
-            let inner = Inner { v: 1, from: me.peer().address(true), to: to.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, session: None, body: me.name.clone() };
+            let inner = Inner { v: 1, from: me.peer().address(true), to: to.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, body: me.name.clone() };
             relay::deliver(&to, seal(&me, &to, &inner)?).await?;
             println!("hello sent to {contact}; they must accept it before your messages reach their agents");
             Ok(())
         }
-        Cmd::Send { contact, text, session, kind } => {
-            if !KINDS[..3].contains(&kind.as_str()) {
-                bail!("--kind takes send,ask,reply");
+        Cmd::List { contact, json: as_json } => {
+            let v = daemon::call(json!({ "op": "list", "contact": contact })).await?;
+            if as_json {
+                return print_json(&v);
             }
-            let id = compose_and_send(&store::identity()?, &contact, &kind, &text, None, session).await?;
-            println!("sent {id}");
+            println!("on this machine ({}):", v["me"].as_str().unwrap_or_default());
+            for a in v["local"].as_array().cloned().unwrap_or_default() {
+                println!("  {:<32} {:<12} {:<10} {}", a["name"].as_str().unwrap_or_default(), a["harness"].as_str().unwrap_or_default(), a["status"].as_str().unwrap_or_default(), a["where"].as_str().unwrap_or_default());
+            }
+            println!("reachable:");
+            for a in v["remote"].as_array().cloned().unwrap_or_default() {
+                println!("  {:<32} {:<12} {:<10} {}", a["address"].as_str().unwrap_or_default(), a["harness"].as_str().unwrap_or_default(), a["status"].as_str().unwrap_or_default(), a["where"].as_str().unwrap_or_default());
+            }
+            for g in v["groups"].as_array().cloned().unwrap_or_default() {
+                println!("  {}", g.as_str().unwrap_or_default());
+            }
             Ok(())
         }
+        Cmd::Send { to, text, as_ } => {
+            let v = daemon::call(json!({ "op": "send", "to": to, "text": text, "as": as_ })).await?;
+            for s in v["sent"].as_array().cloned().unwrap_or_default() {
+                println!("{} -> {} {}", s["to"].as_str().unwrap_or_default(), s["receipt"]["status"].as_str().unwrap_or_default(), s["receipt"]["detail"].as_str().unwrap_or_default());
+            }
+            Ok(())
+        }
+        Cmd::Ask { to, text, as_, timeout } => {
+            let v = daemon::call(json!({ "op": "ask", "to": to, "text": text, "as": as_, "timeout_ms": timeout * 1000 })).await?;
+            let replies = v["replies"].as_array().cloned().unwrap_or_default();
+            let mut missing = false;
+            for r in &replies {
+                match r["reply"]["text"].as_str() {
+                    Some(t) if replies.len() == 1 => println!("{t}"),
+                    Some(t) => println!("[{}] {t}", r["from"].as_str().unwrap_or_default()),
+                    None => {
+                        missing = true;
+                        eprintln!("{}: no reply within {timeout}s; it will arrive in the inbox", r["from"].as_str().unwrap_or_default());
+                    }
+                }
+            }
+            if missing {
+                std::process::exit(2);
+            }
+            Ok(())
+        }
+        Cmd::Inbox { as_, wait, hook } => {
+            let v = daemon::call(json!({ "op": "inbox", "as": as_, "wait_ms": wait * 1000 })).await?;
+            for m in v["messages"].as_array().cloned().unwrap_or_default() {
+                if hook {
+                    let s = |k: &str| m[k].as_str().unwrap_or_default().to_string();
+                    let how = if s("kind") == "ask" { format!("ASK, answer with: letagents reply {} \"<text>\"", s("id")) } else { s("kind") };
+                    println!("[letagents · verified {}] {how}\n{}\n", s("from"), s("text"));
+                } else {
+                    println!("{m}");
+                }
+            }
+            Ok(())
+        }
+        Cmd::Reply { id, text, as_ } => {
+            let v = daemon::call(json!({ "op": "reply", "msg": id, "text": text, "as": as_ })).await?;
+            println!("sent {}", v["msg_id"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        Cmd::Status => print_json(&daemon::call(json!({ "op": "status" })).await?),
         Cmd::Check => {
             let me = store::identity()?;
             let mut seen: Seen = store::read("seen.json");
@@ -266,64 +434,10 @@ async fn main() -> Result<()> {
             }
             relay::ack(&me, &msgs.iter().map(|m| m.seq).collect::<Vec<_>>()).await
         }
-        Cmd::Listen => {
-            let me = store::identity()?;
-            let mut seen: Seen = store::read("seen.json");
-            let me2 = store::identity()?;
-            relay::live(&me2, |env| {
-                print_msg(&me, &env, &mut seen);
-                async {}
-            })
-            .await
-        }
         Cmd::Daemon { target } => daemon::run(store::identity()?, target).await,
-        Cmd::Mcp { as_ } => mcp::run(as_).await,
-        Cmd::Status => {
-            let v = daemon::call(serde_json::json!({ "op": "status" })).await?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
-            Ok(())
-        }
-        Cmd::Ask { contact, text, session, as_, timeout } => {
-            let v = daemon::call(serde_json::json!({ "op": "ask", "to": contact, "text": text, "session": session, "as": as_, "timeout_ms": timeout * 1000 })).await?;
-            match v["reply"]["text"].as_str() {
-                Some(t) => println!("{t}"),
-                None => {
-                    eprintln!("no reply within {timeout}s; it will arrive in the inbox (msg {})", v["msg_id"].as_str().unwrap_or_default());
-                    std::process::exit(2);
-                }
-            }
-            Ok(())
-        }
-        Cmd::Inbox { as_, wait, hook } => {
-            let v = daemon::call(serde_json::json!({ "op": "inbox", "as": as_, "wait_ms": wait * 1000 })).await?;
-            let msgs = v["messages"].as_array().cloned().unwrap_or_default();
-            if hook {
-                for m in &msgs {
-                    let s = |k: &str| m[k].as_str().unwrap_or_default().to_string();
-                    let how = if s("kind") == "ask" { format!("ASK, answer with: letagents reply {} \"<text>\"", s("id")) } else { s("kind") };
-                    println!("[letagents · verified {}] {how}\n{}\n", s("from"), s("text"));
-                }
-            } else {
-                for m in &msgs {
-                    println!("{m}");
-                }
-            }
-            Ok(())
-        }
-        Cmd::Reply { id, text } => {
-            let v = daemon::call(serde_json::json!({ "op": "reply", "msg": id, "text": text })).await?;
-            println!("sent {}", v["msg_id"].as_str().unwrap_or_default());
-            Ok(())
-        }
         Cmd::Service { action, target } => service::run(&action, &target),
+        Cmd::Mcp { as_ } => mcp::run(as_).await,
     }
-}
-
-fn bail_if_no_drop(addr: &str) -> Result<()> {
-    if Peer::parse(addr)?.drop.is_none() {
-        bail!("request carries no drop secret");
-    }
-    Ok(())
 }
 
 fn whoami() -> Result<()> {

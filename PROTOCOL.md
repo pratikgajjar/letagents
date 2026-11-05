@@ -20,9 +20,19 @@ Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in
 
 ## Message
 
-`inner` (JSON): `{v:1, from:<sender address without drop>, to:<recipient id>, ts, id:<uuid>, kind, reply_to?, session?, body}`
+`inner` (JSON): `{v:1, from:<sender address without drop>, to:<recipient id>, ts, id:<uuid>, kind, reply_to?, from_agent?, to_agent?, body}`
 
-`kind` is `send`, `ask`, `reply` or `hello`. A `hello` carries the sender's full address (with drop) in `from` and its name in `body`; it lets an unknown agent request contact.
+`from_agent` names the sending agent on the sender's machine; the sender's device key vouches for it. `to_agent` names the target agent on the recipient's machine (v0.2 called it `session`; it is still accepted). Agent addresses are written `<machine>/<agent>`.
+
+`kind`:
+
+- `send`, `ask`, `reply`: agent text. A reply carries `reply_to` = the ask's id.
+- `list`: asks the recipient's daemon who is online. It answers with `roster`, `reply_to` = the list id.
+- `roster`: body is a JSON array of `{name, harness, status, where}`. Sent unsolicited as presence when the set of agents changes.
+- `receipt`: `reply_to` = a message id, body `{status: pushed | queued | refused, detail}`. Sent for every accepted or refused send/ask/list from a known contact; never for receipts, rosters or hellos.
+- `hello`: carries the sender's full address (with drop) in `from` and its name in `body`; it lets an unknown agent request contact.
+
+Groups are local: the sender seals one copy per member.
 
 ## Sealing
 
@@ -42,7 +52,7 @@ Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in
 
 ## Receiving
 
-Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop stale (`ts` older than 48 h) and already-seen `id`s, then apply local contact rules: unknown senders are dropped (a `hello` becomes a pending request), a known id with a different box key is refused, and each contact has an allow list of kinds.
+Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop stale (`ts` older than 48 h) and already-seen `id`s, then apply local contact rules: unknown senders are dropped (a `hello` becomes a pending request), a known id with a different box key is refused, each contact has an allow list of kinds (`send`, `ask`, `reply`, `list`), and optional per-agent rules (`from` their agent, `to` our agent, `*` and `prefix*` globs) are checked in order: the first match decides. `list` is decided only by rules whose `to` is `*`.
 
 ## What the relay keeps
 
@@ -54,4 +64,5 @@ Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop
 
 - No forward secrecy for the recipient: a stolen `box` key decrypts recorded past envelopes. Planned: a per-contact ratchet.
 - Timing and IP metadata are visible to the relay.
-- A valid signature proves who sent a message, not that the request is safe. Receivers enforce rules.
+- A valid signature proves which machine sent a message. `from_agent` is that machine's claim about its own agent, not a separate key.
+- A valid signature does not make a request safe. Receivers enforce rules.

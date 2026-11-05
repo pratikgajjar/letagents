@@ -52,9 +52,28 @@ pub fn create_identity(name: &str) -> Result<Identity> {
 pub struct Contact {
     pub address: String,
     pub allow: Vec<String>,
+    /// Default local agent for its messages
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     pub added: i64,
+    /// Per-agent rules. If any exist, a message must also match one: their agent (`from`), our agent (`to`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<AgentRule>,
+}
+
+/// A rule for one pair of agents. `*` matches any name; `prefix*` matches by prefix.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AgentRule {
+    pub from: String,
+    pub to: String,
+    pub allow: Vec<String>,
+}
+
+pub fn glob(pat: &str, name: &str) -> bool {
+    match pat.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => pat == name,
+    }
 }
 
 pub type Contacts = BTreeMap<String, Contact>;
@@ -63,8 +82,8 @@ pub fn contacts() -> Contacts {
     read("contacts.json")
 }
 
-/// Returns the contact name when this verified sender may send this kind, else the reason.
-pub fn authorize(sender: &Peer, kind: &str) -> std::result::Result<(String, Contact), String> {
+/// Find the contact for a verified sender. Err if unknown or presenting a different key.
+pub fn contact_of(sender: &Peer) -> std::result::Result<(String, Contact), String> {
     for (name, c) in contacts() {
         let Ok(p) = Peer::parse(&c.address) else { continue };
         if p.sig != sender.sig {
@@ -73,12 +92,33 @@ pub fn authorize(sender: &Peer, kind: &str) -> std::result::Result<(String, Cont
         if p.rcv != sender.rcv {
             return Err(format!("contact {name} presented a different key"));
         }
-        if !c.allow.iter().any(|k| k == kind) {
-            return Err(format!("contact {name} is not allowed to {kind}"));
-        }
         return Ok((name, c));
     }
     Err(format!("unknown sender {}", sender.safety_number()))
+}
+
+/// May this contact's agent `from` send `kind` to our agent `to`? Returns the contact on success.
+pub fn authorize(sender: &Peer, kind: &str, from: &str, to: &str) -> std::result::Result<(String, Contact), String> {
+    let (name, c) = contact_of(sender)?;
+    if !c.allow.iter().any(|k| k == kind) {
+        return Err(format!("contact {name} is not allowed to {kind}"));
+    }
+    // Rules are checked in order; the first rule whose agents match decides (like a firewall).
+    // `list` is about the whole machine: only machine-wide rules (`--to '*'`) decide it.
+    if !c.rules.is_empty() {
+        let hit = c.rules.iter().find(|r| glob(&r.from, from) && if kind == "list" { r.to == "*" } else { glob(&r.to, to) });
+        match hit {
+            Some(r) if r.allow.iter().any(|k| k == kind) => {}
+            Some(_) => return Err(format!("rule: {name}/{from} may not {kind} {to}")),
+            None => return Err(format!("no rule matches {name}/{from} -> {to}")),
+        }
+    }
+    Ok((name, c))
+}
+
+/// Groups: a name -> member addresses (`contact/agent` or `contact`). Kept on this machine only.
+pub fn groups() -> BTreeMap<String, Vec<String>> {
+    read("groups.json")
 }
 
 /// A contact request from an unknown agent (a "hello"). Never delivered to agents as instructions.

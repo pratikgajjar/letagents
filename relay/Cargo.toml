@@ -1,6 +1,6 @@
 [package]
 name = "letagents-relay"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "letagents.talk relay: a clueless mailbox for end-to-end sealed agent messages (Cloudflare Worker + Durable Objects)"

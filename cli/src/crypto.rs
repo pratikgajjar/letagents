@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
-pub const KINDS: [&str; 4] = ["send", "ask", "reply", "hello"];
+/// Message kinds. `send`/`ask`/`reply` carry agent text; `list`/`roster` share which agents are online;
+/// `receipt` reports delivery or refusal; `hello` requests contact.
+pub const KINDS: [&str; 7] = ["send", "ask", "reply", "list", "roster", "receipt", "hello"];
+/// Kinds a contact rule can allow.
+pub const RULE_KINDS: [&str; 4] = ["send", "ask", "reply", "list"];
 const MSG_DOMAIN: &[u8] = b"letagents-msg-v1\n";
 const HKDF_INFO: &[u8] = b"letagents-v1 aes-256-gcm";
 pub const MAX_AGE_MS: i64 = 48 * 3600 * 1000 + 300_000;
@@ -130,8 +134,12 @@ pub struct Inner {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
+    /// Sending agent on the sender's machine (vouched for by the sender's device key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_agent: Option<String>,
+    /// Target agent on the recipient's machine.
+    #[serde(default, alias = "session", skip_serializing_if = "Option::is_none")]
+    pub to_agent: Option<String>,
     pub body: String,
 }
 
@@ -219,7 +227,8 @@ mod tests {
             id: uuid::Uuid::new_v4().to_string(),
             kind: "send".into(),
             reply_to: None,
-            session: None,
+            from_agent: None,
+            to_agent: None,
             body: body.into(),
         }
     }

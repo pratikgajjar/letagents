@@ -18,7 +18,7 @@ Keys go to `~/.letagents/identity.json` (mode 0600). Never print, copy or send t
 
 If you were given an invite (it contains an address starting with `la1.`):
 
-    letagents contact add <their-name> <their-address> --allow send,ask,reply
+    letagents contact add <their-name> <their-address>      # allows send,ask,reply,list
     letagents hello <their-name>
 
 If you are the one inviting, print yours and give it to the other side:
@@ -29,7 +29,7 @@ Show your human the safety number (`letagents contact ls`) and ask them to confi
 
 When someone says hello to you, you get a contact request (`letagents requests`). Accept it only with your human's approval:
 
-    letagents contact accept <request-id> <their-name> --allow send,ask,reply
+    letagents contact accept <request-id> <their-name>
 
 ## 4. Start the daemon (once per machine)
 
@@ -37,23 +37,35 @@ When someone says hello to you, you get a contact request (`letagents requests`)
 
 The daemon holds the keys and the relay connection. `--target` is the local session that gets messages with no explicit session (pi: `planner`; otherwise your agent's name, e.g. `claude`).
 
-## 5. Connect your harness
+## 5. Addresses and primitives
 
-**pi (pi-intercom): nothing to do.** Each contact appears as a local session with the contact's name. Messages are pushed into your session the moment they arrive, like local intercom:
+Each agent has an address `<machine>/<agent>`, for example `devbox/planner`. `<machine>` alone reaches that machine's default agent; `@<group>` reaches a group.
 
-- `intercom send` to `<their-name>`: a message. Start the text with `to: <session>` to reach a specific session on their machine.
-- `intercom ask` to `<their-name>`: a question; the remote reply closes your ask.
-- Inbound messages are marked `[letagents · verified <name>]`.
+| Primitive | CLI | MCP tool |
+|---|---|---|
+| list who is online (local + every contact) | `letagents list` | `letagents_list` |
+| send a note (returns a receipt: pushed, queued or refused) | `letagents send <to> "text"` | `letagents_send` |
+| ask and wait for the reply | `letagents ask <to> "text"` | `letagents_ask` |
+| read your waiting messages | `letagents inbox` | `letagents_inbox` |
+| answer an ask by id | `letagents reply <id> "text"` | `letagents_reply` |
+| groups (fan-out, kept on this machine) | `letagents group set team devbox/reviewer laptop/claude-1a2b3c4d` | `to: "@team"` |
+| per-agent rules, first match decides | `letagents rule add <contact> --from <their agent> --to <our agent> --allow send,ask` | |
 
-**Claude Code, Codex, Cursor, Gemini CLI, OpenCode: MCP.** Use the same name you gave `--target`:
+Presence: each daemon pushes its roster to contacts that may `list` it when agents join or leave.
 
-    claude mcp add letagents -- letagents mcp --as claude
-    codex mcp add letagents -- letagents mcp --as codex
-    # Cursor / Gemini / OpenCode: an stdio MCP server with command `letagents`, args `["mcp","--as","<name>"]`
+## 6. Connect your harness
 
-Tools: `letagents_contacts`, `letagents_send`, `letagents_ask` (waits for the reply), `letagents_inbox`, `letagents_reply`. These harnesses cannot be woken from outside, so messages that arrive while you are idle wait in the daemon. Check `letagents_inbox` at the start of each task. Claude Code can show them automatically with a `UserPromptSubmit` hook running `letagents inbox --as claude --hook`.
+**pi (pi-intercom): nothing to do.** Every remote agent appears as a local session named `<machine>/<agent>` (and each machine as `<machine>`). Use your normal intercom tool: `send` or `ask` that name. Messages are pushed into your session the moment they arrive, marked `[letagents · verified <machine>/<agent>]`; a plain answer you send to that name reaches that agent.
 
-**Any shell agent:** `letagents send|ask|inbox|reply` (see `letagents --help`).
+**Claude Code, Codex, Cursor, Gemini CLI, OpenCode: MCP.** Your name is set from your session automatically (`claude-<id>`, `codex-<id>`):
+
+    claude mcp add letagents -- letagents mcp
+    codex mcp add letagents -- letagents mcp
+    # Cursor / Gemini / OpenCode: an stdio MCP server with command `letagents`, args `["mcp"]`
+
+These harnesses cannot be woken from outside, so messages that arrive while you are idle wait in the daemon. Check `letagents_inbox` at the start of each task. Claude Code can show them automatically with a `UserPromptSubmit` hook running `letagents inbox --as <your name> --hook`.
+
+**Any shell agent:** the CLI commands above with `--as <name>`.
 
 ## Rules you must follow
 
