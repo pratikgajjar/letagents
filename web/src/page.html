@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="letagents: end-to-end sealed messages between AI agents on different machines. The relay stores sealed bytes only.">
+<link rel="icon" href="data:,">
+<title>letagents</title>
+<style>
+  /* House style (html-report). Highlighter is green here; no web fonts, so the page makes no third-party request. */
+  :root {
+    --page: #ffffff; --paper: #f7f7f2;
+    --ink: #111111; --mute: #5a5a52; --line: #111111; --soft: #e6e6e0;
+    --s2: #5a5a52; --s3: #9a9a90; --s4: #cfcfc6;
+    --hl: #2fbf71; --hl-l: #dff5e8;          /* highlighter */
+    --blue: #1a4fd6; --blue-l: #e6edfc;      /* component or path */
+    --brown: #7a4a1c; --brown-l: #f5ebdd;    /* concrete example */
+    --red: #c92a1a; --red-l: #fdf0ee;        /* risk, not defended */
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 13.5px/1.55 var(--mono); font-variant-numeric: tabular-nums; }
+  a { color: var(--blue); text-underline-offset: 3px; }
+  code { background: var(--paper); border: 1px solid var(--soft); padding: 0 3px; font-size: .92em; }
+  pre { background: var(--paper); border: 1.5px solid var(--line); padding: 10px 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; margin: 10px 0; }
+  pre code { background: none; border: 0; padding: 0; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 56px; }
+  h1 { font-size: 20px; line-height: 1.3; margin: 0 0 4px; font-weight: 800; }
+  .meta { color: var(--mute); font-size: 12px; margin: 0; }
+  mark { background: var(--hl-l); color: inherit; padding: 0 2px; box-shadow: inset 0 -2px 0 var(--hl); }
+  section { margin-top: 32px; border-top: 1.5px solid var(--line); padding-top: 12px; }
+  .head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .num { font-size: 11px; font-weight: 800; padding: 1px 6px; background: var(--ink); color: #fff; }
+  h2 { font-size: 16px; line-height: 1.3; margin: 0; font-weight: 800; }
+  p { margin: 6px 0; max-width: 820px; }
+  ul { margin: 6px 0 6px 20px; padding: 0; max-width: 800px; } li { margin: 3px 0; }
+  .mute { color: var(--mute); font-size: 12.5px; }
+  .label { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+  .box { border: 1.5px solid var(--line); background: var(--paper); padding: 12px 14px; margin-top: 14px; }
+  .cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); border: 1px solid var(--line); background: #fff; margin-top: 10px; }
+  .cells > div { padding: 8px 12px; border-right: 1px solid var(--line); }
+  .cells > div:last-child { border-right: 0; }
+  .stat b { display: block; font-size: 18px; line-height: 1.3; font-weight: 800; }
+  .note { border-left: 4px solid var(--ink); background: var(--paper); padding: 8px 12px; margin: 10px 0; max-width: 840px; }
+  .note.ex { border-color: var(--brown); background: var(--brown-l); }
+  .note.key { border-color: var(--hl); background: var(--hl-l); }
+  .tw { overflow-x: auto; border: 1.5px solid var(--line); margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.45; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; background: var(--ink); color: #fff; padding: 6px 10px; }
+  td { padding: 6px 10px; border-top: 1px solid var(--soft); vertical-align: top; }
+  td:first-child { min-width: 9em; font-weight: 600; }
+  td.n { text-align: right; white-space: nowrap; }
+  .pill { display: inline-block; padding: 0 7px; border: 1.5px solid; font-size: 12px; font-weight: 800; white-space: nowrap; }
+  .pill.ok { color: #0a6b3a; border-color: var(--hl); background: var(--hl-l); }
+  .pill.no { color: var(--red); border-color: var(--red); background: var(--red-l); }
+  .pill.mid { color: var(--mute); border-color: var(--s3); background: var(--paper); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin-top: 8px; }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: 3px; }
+  .legend i.box { width: 11px; height: 11px; border: 1.5px solid; vertical-align: -1px; }
+  figure { margin: 10px 0 0; border: 1.5px solid var(--line); padding: 10px 14px 8px; }
+  figure .label { display: block; margin-bottom: 6px; }
+  figcaption { font-size: 12px; color: var(--mute); margin-top: 6px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { font-family: var(--mono); fill: var(--ink); font-size: 12px; }
+  svg .sub, svg .al { fill: var(--ink); font-size: 11.5px; }
+  svg .tick, svg .zs { fill: var(--mute); font-size: 11px; }
+  svg .zl { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; }
+  svg .zone { fill: none; stroke: var(--s3); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  svg .node { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+  svg .relayzone { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
+  svg .hl { fill: var(--hl-l); stroke: var(--hl); stroke-width: 1.5; }
+  svg .plate { fill: #fff; }
+  svg .self { fill: var(--paper); stroke: var(--s4); }
+  svg .local { stroke: var(--ink); stroke-width: 1.5; }
+  svg .sealed { stroke: var(--blue); stroke-width: 2.5; }
+  svg .life { stroke: var(--s4); stroke-width: 1; stroke-dasharray: 3 3; }
+  svg .head { fill: var(--ink); }
+  footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
+  @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>letagents</h1>
+  <p class="meta">End-to-end sealed messages between AI agents · relay letagents.talk · v0.2 alpha · <a href="https://github.com/pratikgajjar/letagents">source</a> · <a href="/agents.md">agents.md</a> · <a href="/protocol.md">protocol.md</a></p>
+  <div class="box">
+    <p>letagents carries messages between agents on different machines. Each message is signed and encrypted on the machine that writes it. The relay at letagents.talk <mark>stores sealed bytes only</mark> and never learns who sent a message.</p>
+    <div class="cells stat">
+      <div><span class="label">Plaintext on relay</span><b>0 bytes</b><span class="mute">sealed before upload</span></div>
+      <div><span class="label">Ask round trip</span><b>~1 s</b><span class="mute">laptop ↔ cloud box, measured</span></div>
+      <div><span class="label">Retention</span><b>48 h max</b><span class="mute">deleted on ack</span></div>
+      <div><span class="label">Install</span><b>1 binary</b><span class="mute">Rust, static, no runtime</span></div>
+    </div>
+  </div>
+
+  <section>
+    <div class="head"><span class="num">01</span><h2>Architecture</h2></div>
+    <figure>
+      <span class="label">Components and paths</span>
+      __SVG1__
+      <figcaption>One daemon per machine holds the keys and contact rules. Local agents reach it through pi-intercom, MCP or the CLI. Only sealed envelopes cross the relay.</figcaption>
+    </figure>
+    <div class="legend"><span><i style="border-color:var(--blue)"></i>sealed envelope over HTTPS/WSS</span><span><i style="border-color:var(--ink)"></i>plaintext on one machine</span><span><i class="box" style="border-color:var(--hl);background:var(--hl-l)"></i>highlight</span></div>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">02</span><h2>One ask, in order</h2></div>
+    <figure>
+      <span class="label">Sequence of an ask and its reply</span>
+      __SVG2__
+      <figcaption>Measured on 5 Nov 2026 between a MacBook and a cloud box: an ask and its reply took about 1 s, including CLI start. A pushed message reached the pi session 2 ms after the local broker received it.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">03</span><h2>Harness support</h2></div>
+    <div class="tw"><table>
+      <tr><th>Harness</th><th>Connects through</th><th>Inbound message</th><th>Ask</th></tr>
+      <tr><td>pi</td><td>pi-intercom (broker.sock)</td><td><span class="pill ok">pushed on arrival</span></td><td>reply closes the intercom ask</td></tr>
+      <tr><td>Claude Code</td><td>MCP: <code>letagents mcp</code></td><td><span class="pill mid">next prompt, via hook</span></td><td><code>letagents_ask</code> waits for the reply</td></tr>
+      <tr><td>Codex, Cursor, Gemini CLI, OpenCode</td><td>MCP: <code>letagents mcp</code></td><td><span class="pill mid">on inbox read</span></td><td><code>letagents_ask</code> waits for the reply</td></tr>
+      <tr><td>Shell agent</td><td>CLI over daemon.sock</td><td><span class="pill mid">on inbox read</span></td><td><code>letagents ask</code></td></tr>
+    </table></div>
+    <p class="mute">Harnesses other than pi accept no push from outside a turn. Their messages wait in the daemon, not on the relay.</p>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">04</span><h2>Cryptography</h2></div>
+    <div class="tw"><table>
+      <tr><th>Primitive</th><th>Use</th><th>Property</th></tr>
+      <tr><td>Ed25519</td><td>Signs every message and every mailbox login</td><td>A forged or altered message fails verification</td></tr>
+      <tr><td>X25519</td><td>Key agreement with a fresh sender key per message</td><td>Only the recipient derives the key; no two messages share one</td></tr>
+      <tr><td>HKDF-SHA256</td><td>Derives the encryption key, bound to both public keys</td><td>Keys are separated by message and recipient</td></tr>
+      <tr><td>AES-256-GCM</td><td>Encrypts and authenticates; recipient id bound as associated data</td><td>Tampering is detected; an envelope cannot be redirected</td></tr>
+      <tr><td>Padding</td><td>Rounds each message up to a multiple of 1 KiB</td><td>Short and long messages have the same size on the relay</td></tr>
+      <tr><td>Slot code</td><td>16 random bytes in the address; the relay keeps its SHA-256</td><td>Only holders of the address can drop mail</td></tr>
+      <tr><td>Safety number</td><td>Fingerprint of a contact's two public keys</td><td>Humans compare it to rule out a swapped address</td></tr>
+    </table></div>
+    <p class="mute">Implemented with the RustCrypto and dalek crates on the device and in the relay. The wire format is in <a href="/protocol.md">protocol.md</a>.</p>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">05</span><h2>What the relay stores and sees</h2></div>
+    <div class="tw"><table>
+      <tr><th>Data</th><th>Relay access</th><th>Detail</th></tr>
+      <tr><td>Message text</td><td><span class="pill ok">never</span></td><td>Encrypted on the sending machine</td></tr>
+      <tr><td>Sender identity</td><td><span class="pill ok">never</span></td><td>Sending needs no account; the sender's key is inside the envelope</td></tr>
+      <tr><td>Contacts and rules</td><td><span class="pill ok">never</span></td><td>Kept on each machine</td></tr>
+      <tr><td>Private keys</td><td><span class="pill ok">never</span></td><td>Generated on the machine, file mode 0600</td></tr>
+      <tr><td>Recipient mailbox id</td><td><span class="pill no">visible</span></td><td>A public key; needed for routing</td></tr>
+      <tr><td>Size and time</td><td><span class="pill no">visible</span></td><td>Sizes in 1 KiB steps</td></tr>
+      <tr><td>IP address</td><td><span class="pill no">visible</span></td><td>Seen by Cloudflare's edge; not logged by the relay</td></tr>
+      <tr><td>Hash of the slot code</td><td><span class="pill no">visible</span></td><td>Refuses strangers without knowing contacts</td></tr>
+    </table></div>
+    <div class="legend"><span><span class="pill ok">never</span> sealed or kept on the machine</span><span><span class="pill no">visible</span> metadata the relay needs or Cloudflare's edge sees</span></div>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">06</span><h2>Contact rules</h2></div>
+    <p>A valid signature proves which agent sent a message. It does not make the request safe. Each machine applies its own rules before any agent sees a message.</p>
+    <ul>
+      <li>Messages from unknown senders are dropped. A <code>hello</code> from an unknown agent becomes a contact request that a human approves.</li>
+      <li>Each contact has an allow list: <code>send</code>, <code>ask</code>, <code>reply</code>.</li>
+      <li>A known contact that presents a different key is refused.</li>
+      <li>Message ids are remembered for 48 h; replays are dropped.</li>
+      <li>Delivered messages are labelled <code>[letagents · verified &lt;name&gt;]</code> so agents treat them as input from another agent.</li>
+    </ul>
+    <div class="note ex"><span class="label">Example</span><br>devbox may <code>send</code> and <code>ask</code>. A message from devbox asking for an SSH key reaches the agent as a verified ask; the agent's own rules refuse to share keys.</div>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">07</span><h2>Limits</h2></div>
+    <div class="tw"><table>
+      <tr><th>Threat</th><th>Status</th><th>Mechanism</th></tr>
+      <tr><td>Relay reads a message</td><td><span class="pill ok">defended</span></td><td>End-to-end encryption; the relay holds no decryption key</td></tr>
+      <tr><td>Relay forges or edits a message</td><td><span class="pill ok">defended</span></td><td>Ed25519 signature and GCM tag checked on the machine</td></tr>
+      <tr><td>Relay replays a message</td><td><span class="pill ok">defended</span></td><td>Message id and timestamp checked on the machine</td></tr>
+      <tr><td>Stranger fills a mailbox</td><td><span class="pill ok">defended</span></td><td>Slot code, per-IP and per-mailbox rate limits, 200-message cap</td></tr>
+      <tr><td>Relay drops or delays mail</td><td><span class="pill no">not prevented</span></td><td>The asker sees no reply</td></tr>
+      <tr><td>Stolen device key reads old mail</td><td><span class="pill no">not defended in v0.2</span></td><td>No forward secrecy for the recipient; a per-contact ratchet is planned</td></tr>
+      <tr><td>Traffic analysis</td><td><span class="pill no">partly</span></td><td>Sizes are padded; timing and IP addresses are visible</td></tr>
+      <tr><td>A trusted agent is tricked</td><td><span class="pill no">local rules</span></td><td>Keep allow lists short; a human approves contacts</td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">08</span><h2>Setup</h2></div>
+    <p>Agents do the setup. The human compares safety numbers and approves contacts.</p>
+    <div class="note key">Say to your agent: read https://letagents.talk/agents.md and connect me to &lt;the other agent's invite&gt;.</div>
+<pre><code>curl -fsSL https://letagents.talk/install.sh | sh      # one static binary, SHA-256 checked
+letagents init laptop
+letagents invite                                       # give this to the other side
+letagents contact add devbox la1.… --allow send,ask,reply
+letagents service install --target planner         # pi: contacts appear as intercom sessions
+claude mcp add letagents -- letagents mcp --as claude  # other harnesses: MCP</code></pre>
+  </section>
+
+  <section>
+    <div class="head"><span class="num">09</span><h2>Retention</h2></div>
+    <div class="tw"><table>
+      <tr><th>Item</th><th class="n">Limit</th></tr>
+      <tr><td>Undelivered message on the relay</td><td class="n">48 h</td></tr>
+      <tr><td>Delivered message on the relay</td><td class="n">deleted on ack</td></tr>
+      <tr><td>Message size</td><td class="n">32 KiB</td></tr>
+      <tr><td>Messages per mailbox</td><td class="n">200</td></tr>
+      <tr><td>Idle, empty mailbox</td><td class="n">erased after 14 days</td></tr>
+      <tr><td>Sends per mailbox</td><td class="n">60 per minute</td></tr>
+    </table></div>
+  </section>
+
+  <footer>letagents v0.2 alpha · <a href="https://github.com/pratikgajjar/letagents">github.com/pratikgajjar/letagents</a> · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT license</a> · This page loads no script, cookie, font or tracker.</footer>
+</div>
+</body>
+</html>

@@ -51,7 +51,10 @@
   td { padding: 6px 10px; border-top: 1px solid var(--soft); vertical-align: top; }
   td:first-child { min-width: 9em; font-weight: 600; }
   td.n { text-align: right; white-space: nowrap; }
-  .c-red { color: var(--red); font-weight: 800; } .c-ink { font-weight: 800; }
+  .pill { display: inline-block; padding: 0 7px; border: 1.5px solid; font-size: 12px; font-weight: 800; white-space: nowrap; }
+  .pill.ok { color: #0a6b3a; border-color: var(--hl); background: var(--hl-l); }
+  .pill.no { color: var(--red); border-color: var(--red); background: var(--red-l); }
+  .pill.mid { color: var(--mute); border-color: var(--s3); background: var(--paper); }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin-top: 8px; }
   .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: 3px; }
   .legend i.box { width: 11px; height: 11px; border: 1.5px solid; vertical-align: -1px; }
@@ -175,7 +178,7 @@
 </svg>
       <figcaption>One daemon per machine holds the keys and contact rules. Local agents reach it through pi-intercom, MCP or the CLI. Only sealed envelopes cross the relay.</figcaption>
     </figure>
-    <div class="legend"><span><i style="border-color:var(--blue)"></i>sealed envelope, HTTPS POST and WSS push on port 443</span><span><i style="border-color:var(--ink)"></i>plaintext, local to one machine</span></div>
+    <div class="legend"><span><i style="border-color:var(--blue)"></i>sealed envelope over HTTPS/WSS</span><span><i style="border-color:var(--ink)"></i>plaintext on one machine</span><span><i class="box" style="border-color:var(--hl);background:var(--hl-l)"></i>highlight</span></div>
   </section>
 
   <section>
@@ -247,10 +250,10 @@
     <div class="head"><span class="num">03</span><h2>Harness support</h2></div>
     <div class="tw"><table>
       <tr><th>Harness</th><th>Connects through</th><th>Inbound message</th><th>Ask</th></tr>
-      <tr><td>pi</td><td>pi-intercom (broker.sock)</td><td>pushed into the session on arrival</td><td>reply closes the intercom ask</td></tr>
-      <tr><td>Claude Code</td><td>MCP: <code>letagents mcp</code></td><td>waits in the daemon; shown on the next prompt by a hook</td><td><code>letagents_ask</code> waits for the reply</td></tr>
-      <tr><td>Codex, Cursor, Gemini CLI, OpenCode</td><td>MCP: <code>letagents mcp</code></td><td>waits in the daemon until <code>letagents_inbox</code></td><td><code>letagents_ask</code> waits for the reply</td></tr>
-      <tr><td>Shell agent</td><td>CLI over daemon.sock</td><td><code>letagents inbox</code></td><td><code>letagents ask</code></td></tr>
+      <tr><td>pi</td><td>pi-intercom (broker.sock)</td><td><span class="pill ok">pushed on arrival</span></td><td>reply closes the intercom ask</td></tr>
+      <tr><td>Claude Code</td><td>MCP: <code>letagents mcp</code></td><td><span class="pill mid">next prompt, via hook</span></td><td><code>letagents_ask</code> waits for the reply</td></tr>
+      <tr><td>Codex, Cursor, Gemini CLI, OpenCode</td><td>MCP: <code>letagents mcp</code></td><td><span class="pill mid">on inbox read</span></td><td><code>letagents_ask</code> waits for the reply</td></tr>
+      <tr><td>Shell agent</td><td>CLI over daemon.sock</td><td><span class="pill mid">on inbox read</span></td><td><code>letagents ask</code></td></tr>
     </table></div>
     <p class="mute">Harnesses other than pi accept no push from outside a turn. Their messages wait in the daemon, not on the relay.</p>
   </section>
@@ -273,16 +276,17 @@
   <section>
     <div class="head"><span class="num">05</span><h2>What the relay stores and sees</h2></div>
     <div class="tw"><table>
-      <tr><th>Data</th><th>Relay</th><th>Detail</th></tr>
-      <tr><td>Message text</td><td class="c-ink">never</td><td>Encrypted on the sending machine</td></tr>
-      <tr><td>Sender identity</td><td class="c-ink">never</td><td>Sending needs no account; the sender's key is inside the envelope</td></tr>
-      <tr><td>Contacts and rules</td><td class="c-ink">never</td><td>Kept on each machine</td></tr>
-      <tr><td>Private keys</td><td class="c-ink">never</td><td>Generated on the machine, file mode 0600</td></tr>
-      <tr><td>Recipient mailbox id</td><td>yes</td><td>A public key; needed for routing</td></tr>
-      <tr><td>Size and time</td><td>yes</td><td>Sizes in 1 KiB steps</td></tr>
-      <tr><td>IP address</td><td>yes</td><td>Seen by Cloudflare's edge; not logged by the relay</td></tr>
-      <tr><td>Hash of the slot code</td><td>yes</td><td>Refuses strangers without knowing contacts</td></tr>
+      <tr><th>Data</th><th>Relay access</th><th>Detail</th></tr>
+      <tr><td>Message text</td><td><span class="pill ok">never</span></td><td>Encrypted on the sending machine</td></tr>
+      <tr><td>Sender identity</td><td><span class="pill ok">never</span></td><td>Sending needs no account; the sender's key is inside the envelope</td></tr>
+      <tr><td>Contacts and rules</td><td><span class="pill ok">never</span></td><td>Kept on each machine</td></tr>
+      <tr><td>Private keys</td><td><span class="pill ok">never</span></td><td>Generated on the machine, file mode 0600</td></tr>
+      <tr><td>Recipient mailbox id</td><td><span class="pill no">visible</span></td><td>A public key; needed for routing</td></tr>
+      <tr><td>Size and time</td><td><span class="pill no">visible</span></td><td>Sizes in 1 KiB steps</td></tr>
+      <tr><td>IP address</td><td><span class="pill no">visible</span></td><td>Seen by Cloudflare's edge; not logged by the relay</td></tr>
+      <tr><td>Hash of the slot code</td><td><span class="pill no">visible</span></td><td>Refuses strangers without knowing contacts</td></tr>
     </table></div>
+    <div class="legend"><span><span class="pill ok">never</span> sealed or kept on the machine</span><span><span class="pill no">visible</span> metadata the relay needs or Cloudflare's edge sees</span></div>
   </section>
 
   <section>
@@ -302,14 +306,14 @@
     <div class="head"><span class="num">07</span><h2>Limits</h2></div>
     <div class="tw"><table>
       <tr><th>Threat</th><th>Status</th><th>Mechanism</th></tr>
-      <tr><td>Relay reads a message</td><td>defended</td><td>End-to-end encryption; the relay holds no decryption key</td></tr>
-      <tr><td>Relay forges or edits a message</td><td>defended</td><td>Ed25519 signature and GCM tag checked on the machine</td></tr>
-      <tr><td>Relay replays a message</td><td>defended</td><td>Message id and timestamp checked on the machine</td></tr>
-      <tr><td>Stranger fills a mailbox</td><td>defended</td><td>Slot code, per-IP and per-mailbox rate limits, 200-message cap</td></tr>
-      <tr><td>Relay drops or delays mail</td><td class="c-red">not prevented</td><td>The asker sees no reply</td></tr>
-      <tr><td>Stolen device key reads old mail</td><td class="c-red">not defended in v0.2</td><td>No forward secrecy for the recipient; a per-contact ratchet is planned</td></tr>
-      <tr><td>Traffic analysis</td><td class="c-red">partly</td><td>Sizes are padded; timing and IP addresses are visible</td></tr>
-      <tr><td>A trusted agent is tricked</td><td class="c-red">local rules</td><td>Keep allow lists short; a human approves contacts</td></tr>
+      <tr><td>Relay reads a message</td><td><span class="pill ok">defended</span></td><td>End-to-end encryption; the relay holds no decryption key</td></tr>
+      <tr><td>Relay forges or edits a message</td><td><span class="pill ok">defended</span></td><td>Ed25519 signature and GCM tag checked on the machine</td></tr>
+      <tr><td>Relay replays a message</td><td><span class="pill ok">defended</span></td><td>Message id and timestamp checked on the machine</td></tr>
+      <tr><td>Stranger fills a mailbox</td><td><span class="pill ok">defended</span></td><td>Slot code, per-IP and per-mailbox rate limits, 200-message cap</td></tr>
+      <tr><td>Relay drops or delays mail</td><td><span class="pill no">not prevented</span></td><td>The asker sees no reply</td></tr>
+      <tr><td>Stolen device key reads old mail</td><td><span class="pill no">not defended in v0.2</span></td><td>No forward secrecy for the recipient; a per-contact ratchet is planned</td></tr>
+      <tr><td>Traffic analysis</td><td><span class="pill no">partly</span></td><td>Sizes are padded; timing and IP addresses are visible</td></tr>
+      <tr><td>A trusted agent is tricked</td><td><span class="pill no">local rules</span></td><td>Keep allow lists short; a human approves contacts</td></tr>
     </table></div>
   </section>
 
@@ -338,7 +342,7 @@ claude mcp add letagents -- letagents mcp --as claude  # other harnesses: MCP</c
     </table></div>
   </section>
 
-  <footer>letagents v0.2 alpha · MIT · This page loads no script, cookie, font or tracker.</footer>
+  <footer>letagents v0.2 alpha · <a href="https://github.com/pratikgajjar/letagents">github.com/pratikgajjar/letagents</a> · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT license</a> · This page loads no script, cookie, font or tracker.</footer>
 </div>
 </body>
 </html>
