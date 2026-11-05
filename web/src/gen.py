@@ -50,7 +50,7 @@ parts.append(f'<rect class="hl" x="{W/2-76}" y="122" width="152" height="20"/>')
 parts.append(f'<text x="{W/2}" y="136" text-anchor="middle" font-weight="800">sealed bytes only</text>')
 parts.append(f'<text x="{W/2}" y="160" text-anchor="middle" class="sub">no sender identity</text>')
 parts.append(f'<text x="{W/2}" y="176" text-anchor="middle" class="sub">no contacts or rules</text>')
-parts.append(f'<text x="{W/2}" y="192" text-anchor="middle" class="sub">deleted on ack or after 48 h</text>')
+parts.append(f'<text x="{W/2}" y="192" text-anchor="middle" class="sub">kept 48 h at most</text>')
 daX=10+12+128+92+96; dbX=W-10-mw+12
 parts.append(arrow(daX,120,rx,120,"sealed","POST",ly=112))
 parts.append(arrow(rx+relay_w,120,dbX,120,"sealed","WSS",ly=112))
@@ -128,3 +128,40 @@ p3.append('</g>')
 p3.append(f'<text x="{W/2}" y="{LY+5}" text-anchor="middle" class="la-static zs">animation paused (reduced motion)</text>')
 p3.append(f'<text x="{(xs[1]+xs[3])/2}" y="{H3-8}" text-anchor="middle" class="zs">only sealed bytes leave a machine · 1 KiB padded · the relay never holds a key</text>')
 svg3 = f'<svg viewBox="0 0 {W} {H3}" role="img" aria-label="Animation: the question &quot;are tests green?&quot; leaves agent A as plaintext, daemon A signs and seals it into ciphertext, the relay carries sealed bytes, daemon B verifies and opens it back to plaintext for agent B, and the reply makes the same trip back.">\n' + "\n".join(p3) + "\n</svg>"
+
+# ---- diagram 4: agent network, N to M ----
+H4 = 420
+p4 = [defs]
+RX, RY, RW, RH = 390, 60, 200, 96
+p4.append(f'<rect class="relayzone" x="{RX}" y="{RY}" width="{RW}" height="{RH}"/>')
+p4.append(f'<text x="{RX+RW/2}" y="{RY+24}" text-anchor="middle" font-weight="800">letagents.talk relay</text>')
+p4.append(f'<rect class="hl" x="{RX+24}" y="{RY+36}" width="{RW-48}" height="20"/>')
+p4.append(f'<text x="{RX+RW/2}" y="{RY+50}" text-anchor="middle" font-weight="800">sealed bytes only</text>')
+p4.append(f'<text x="{RX+RW/2}" y="{RY+76}" text-anchor="middle" class="sub">one mailbox per machine</text>')
+machines = [
+    ("laptop", 10, 10, [("laptop/claude-1048c372", "Claude Code", True), ("laptop/codex-42619", "Codex", False), ("laptop/cloud-bridge", "pi", False)]),
+    ("devbox", 670, 10, [("devbox/planner", "pi", True), ("devbox/reviewer", "pi", False), ("devbox/docs-bot", "pi", False)]),
+    ("teammate", 340, 230, [("teammate/claude-7e21b9aa", "Claude Code", False), ("teammate/reviewer", "pi", False)]),
+]
+MW = 300
+anchors = {}
+for name, mx, my, agents in machines:
+    mh = 40 + len(agents) * 32 + 50
+    p4.append(f'<rect class="zone" x="{mx}" y="{my}" width="{MW}" height="{mh}"/>')
+    p4.append(f'<text x="{mx+10}" y="{my+18}" class="zl">MACHINE {name.upper()}</text>')
+    for i, (addr, harness, hl) in enumerate(agents):
+        ay = my + 30 + i * 32
+        cls = "hl" if hl else "node"
+        p4.append(f'<rect class="{cls}" x="{mx+10}" y="{ay}" width="{MW-20}" height="24"/>')
+        p4.append(f'<text x="{mx+18}" y="{ay+16}" font-weight="800">{esc(addr)}</text>')
+        p4.append(f'<text x="{mx+MW-18}" y="{ay+16}" text-anchor="end" class="zs">{esc(harness)}</text>')
+    dy = my + 30 + len(agents) * 32 + 6
+    p4.append(f'<rect class="node" x="{mx+10}" y="{dy}" width="{MW-20}" height="26" style="fill:var(--paper)"/>')
+    p4.append(f'<text x="{mx+MW/2}" y="{dy+17}" text-anchor="middle" font-weight="800">daemon · keys · rules</text>')
+    anchors[name] = (mx, dy, mh, my)
+lx, ldy, _, _ = anchors["laptop"]; px, pdy, _, _ = anchors["devbox"]; tx, tdy, tmh, tmy = anchors["teammate"]
+p4.append(arrow(lx + MW, ldy + 13, RX, RY + RH - 20, "sealed", both=True))
+p4.append(arrow(px, pdy + 13, RX + RW, RY + RH - 20, "sealed", both=True))
+p4.append(arrow(RX + RW / 2, RY + RH, tx + MW / 2, tmy, "sealed", both=True))
+p4.append(f'<text x="10" y="{H4-14}" class="sub">example: laptop/claude-1048c372 asks devbox/planner · @team = devbox/reviewer + teammate/reviewer</text>')
+svg4 = f'<svg viewBox="0 0 {W} {H4}" role="img" aria-label="Agent network: three machines (laptop, devbox, teammate), each with several agents addressed as machine/agent and one daemon; every daemon connects to the letagents.talk relay, which holds sealed bytes only. Any agent can reach any other agent its rules allow.">\n' + "\n".join(p4) + "\n</svg>"
