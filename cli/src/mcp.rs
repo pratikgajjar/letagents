@@ -26,7 +26,9 @@ fn auto_name(client: &str) -> (String, String) {
     let harness: String = client.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>().to_lowercase();
     let harness = if harness.is_empty() { "mcp".to_string() } else { harness };
     let short = harness.split('-').next().unwrap_or("mcp").to_string();
-    (format!("{short}-{}", std::os::unix::process::parent_id()), harness)
+    // No session id from the harness (Codex keeps one background parent for all sessions): use our own pid,
+    // which is unique per MCP server process.
+    (format!("{short}-{}", std::process::id()), harness)
 }
 
 fn tools() -> Value {
