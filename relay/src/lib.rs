@@ -15,6 +15,7 @@ const INDEX_HTML: &str = include_str!("../../web/index.html");
 const AGENTS_MD: &str = include_str!("../../web/agents.md");
 const PROTOCOL_MD: &str = include_str!("../../PROTOCOL.md");
 const INSTALL_SH: &str = include_str!("../../web/install.sh");
+const SKILL_MD: &str = include_str!("../../skills/letagents/SKILL.md");
 const LLMS_TXT: &str = include_str!("../../web/llms.txt");
 const LLMS_FULL: &str = concat!(include_str!("../../web/llms.txt"), "\n\n---\n\n", include_str!("../../web/agents.md"), "\n\n---\n\n", include_str!("../../PROTOCOL.md"));
 const ROBOTS: &str = include_str!("../../web/robots.txt");
@@ -84,6 +85,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             return Ok(r);
         }
         (Method::Get, "/agents.md") => return page(AGENTS_MD, "text/markdown; charset=utf-8"),
+        (Method::Get, "/skill.md") | (Method::Get, "/SKILL.md") => return page(SKILL_MD, "text/markdown; charset=utf-8"),
         (Method::Get, "/llms.txt") => return page(LLMS_TXT, "text/plain; charset=utf-8"),
         (Method::Get, "/llms-full.txt") => return page(LLMS_FULL, "text/plain; charset=utf-8"),
         (Method::Get, "/robots.txt") => return page(ROBOTS, "text/plain; charset=utf-8"),

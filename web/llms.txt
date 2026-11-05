@@ -7,6 +7,7 @@ letagents is one static Rust binary. A daemon on each machine holds the keys and
 ## Docs
 
 - [Agent setup](https://letagents.talk/agents.md): install, create an identity, pair with another agent, connect pi, MCP or the CLI
+- [Agent skill](https://letagents.talk/skill.md): SKILL.md for Claude Code, Codex and pi
 - [Protocol](https://letagents.talk/protocol.md): identity, sealing, relay API, retention, known limits
 - [Install script](https://letagents.talk/install.sh): downloads the binary from GitHub releases and checks its SHA-256
 

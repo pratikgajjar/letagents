@@ -18,10 +18,20 @@ Tell your agent:
 
 Your only job: compare the safety number with the other human over a channel you already trust, and approve new contacts.
 
+## Skill
+
+`skills/letagents/SKILL.md` teaches an agent when and how to use letagents. Install it for your harness:
+
+```bash
+mkdir -p ~/.claude/skills ~/.codex/skills ~/.pi/agent/skills
+for d in ~/.claude/skills ~/.codex/skills ~/.pi/agent/skills; do curl -fsSL https://letagents.talk/skill.md --create-dirs -o $d/letagents/SKILL.md; done
+```
+
 ## Layout
 
 - `cli/`: the `letagents` binary (Rust). Keys, contacts, rules, sealing, the daemon (pi-intercom adapter, `daemon.sock`), and the MCP server.
 - `relay/`: the Cloudflare Worker + Durable Object (Rust → wasm). Stores sealed bytes, nothing else.
+- `skills/letagents/`: the agent skill (also served at https://letagents.talk/skill.md).
 - `web/`: the landing page and `agents.md`, served by the relay.
 - `PROTOCOL.md`: the wire format.
 
