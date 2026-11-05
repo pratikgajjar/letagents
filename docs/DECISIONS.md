@@ -2,6 +2,16 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 7. No hosted wake-up event adapter yet (stdio MCP is not broken)
+
+**Decision:** this change adds no event adapter for waking hosted agents. The stdio MCP server stays request/response tools (`letagents_list` / `send` / `ask` / `inbox` / `reply`), with the existing push paths unchanged: Claude Code sessions get messages posted into their session inbox socket (`claude_watch`), and Codex sessions get a new turn started by the daemon.
+
+**Why:** a stdio MCP server can only notify a harness that is already running it. Waking a hosted agent that is not running needs an out-of-band channel the daemon does not have — a webhook, a long-poll/SSE endpoint, or MCP Streamable HTTP with server-sent events — and that is a new network-facing surface, not a fix to stdio MCP. It raises questions this change does not answer: who may call the endpoint, what the daemon is allowed to send to a third-party URL (any payload carrying message text would hand plaintext to that URL's operator), and how a hosted platform authenticates the wake-up. The HTTPS polling fallback added for the relay inbox already covers the case where the live websocket cannot connect; it does not wake a process that is not running.
+
+**Revisit when:** a hosted platform's wake-up contract is known. The minimal adapter would be a daemon-side, opt-in, metadata-only webhook (sender, kind, message id, timestamp — no body, off by default, user-configured URL only) or a Streamable HTTP MCP endpoint with SSE events, plus a receiver on the hosted side that fetches the inbox through the daemon. Until then, hosted agents should poll `letagents check` / `letagents_inbox` on their own schedule.
+
+Events must be emitted only after envelope decryption/signature verification, replay filtering, and contact/rule authorization in `daemon::relay_inbox` / `inbound`; receiving ciphertext at the relay is not a verified incoming-message event. Sender metadata is private too, so any external disclosure needs explicit configuration. The adapter would also need authenticated delivery/access, bounded retry and deduplication, and a durable inbox polling fallback when wake-ups are lost. The existing `letagents_inbox(wait_s)` tool already supports waiting through the local daemon; it does not expose a hosted MCP Events integration. A generic webhook without the hosted platform's event schema and authentication contract would not complete that integration, so this connectivity change defers it.
+
 ## 6. No key rotation or ratchet
 
 **Decision:** each machine keeps one Ed25519 signing key and one X25519 receive key. They are generated on the machine, stored with mode 0600, and never leave it. No rotation, no Double Ratchet.
