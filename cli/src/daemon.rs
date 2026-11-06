@@ -36,7 +36,10 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 /// The local intercom session that receives notices (contact requests).
-pub const SYSTEM_SESSION: &str = "letagents";
+/// Not "letagents": a pi session in a project named letagents must stay visible and reachable.
+pub const SYSTEM_SESSION: &str = "letagents-daemon";
+/// Mail waiting for a live session is pushed again this often.
+const REDELIVER_EVERY: Duration = Duration::from_secs(15);
 /// The machine inbox: callers with no agent name (plain CLI) and replies nobody asked for. Never pushed.
 pub const MACHINE_INBOX: &str = "inbox";
 /// A remote agent's plain send goes back to the local agent that wrote to it within this window.
@@ -256,13 +259,15 @@ impl Hub {
                 }
             }
         }
-        // A pi session (e.g. a late reply to an ask sent from the CLI inside pi). Asks need their intercom
-        // link and go through deliver/deliver_local instead.
-        if m.kind != "ask" && m.target != MACHINE_INBOX {
+        // A pi session. An ask pushed this way is answered with `letagents reply`.
+        if m.target != MACHINE_INBOX {
             let system = self.system.read().unwrap().clone();
             if let Some(sys) = system {
-                if let Ok(s) = sys.send(&m.target, &text, None, false).await {
-                    return s.delivered;
+                let text = if m.kind == "ask" { format!("{text}\n\n(answer with: letagents reply {} \"<text>\")", m.id) } else { text };
+                match sys.send(&m.target, &text, None, false).await {
+                    Ok(s) if s.delivered => return true,
+                    Ok(s) => log(format!("push -> {}: broker refused: {}", m.target, s.reason.unwrap_or_default())),
+                    Err(e) => log(format!("push -> {}: {e}", m.target)),
                 }
             }
         }
@@ -400,6 +405,7 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
     tokio::spawn(relay_inbox(hub.clone()));
     tokio::spawn(roster_loop(hub.clone()));
     tokio::spawn(presence_loop(hub.clone()));
+    tokio::spawn(redeliver_loop(hub.clone()));
     loop {
         let (conn, _) = listener.accept().await?;
         tokio::spawn(serve_socket(hub.clone(), conn));
@@ -542,6 +548,51 @@ async fn from_intercom(hub: &Hub, m: Local) {
             log(format!("out -> {dest} FAILED: {e}"));
             if let Some(p) = hub.proxy(&m.proxy) {
                 let _ = p.send(&m.from_id, &format!("[letagents] delivery to {dest} failed: {e}"), None, false).await;
+            }
+        }
+    }
+}
+
+/// Mail spooled for a session that is live now (a pi session on the broker, a watching MCP server, an open
+/// Codex thread) is pushed again until it lands: a push that failed once is not lost in the inbox.
+async fn redeliver_loop(hub: Arc<Hub>) {
+    loop {
+        tokio::time::sleep(REDELIVER_EVERY).await;
+        let cut = now_ms() - crate::crypto::MAX_AGE_MS;
+        let waiting: Vec<Spooled> = hub.spool.lock().unwrap().msgs.iter().filter(|m| m.target != MACHINE_INBOX && m.ts >= cut).cloned().collect();
+        if waiting.is_empty() {
+            continue;
+        }
+        let mut live: HashSet<String> = hub.watchers.lock().unwrap().keys().cloned().collect();
+        live.extend(hub.codex_threads.lock().unwrap().keys().cloned());
+        let system = hub.system.read().unwrap().clone();
+        if let Some(sys) = system {
+            for x in sys.list().await.unwrap_or_default() {
+                for k in ["id", "name"] {
+                    if let Some(v) = x[k].as_str().filter(|v| !v.is_empty()) {
+                        live.insert(v.to_string());
+                    }
+                }
+            }
+        }
+        for m in waiting.into_iter().filter(|m| live.contains(&m.target)) {
+            // Take it out of the spool first: an inbox read or a new watcher must not get it a second time.
+            let at = {
+                let mut s = hub.spool.lock().unwrap();
+                let Some(i) = s.msgs.iter().position(|x| x.id == m.id && x.target == m.target) else { continue };
+                s.msgs.remove(i);
+                hub.save_spool(&s);
+                i
+            };
+            if hub.push(&m).await {
+                log(format!("redelivered {} {} -> {}", m.kind, m.id, m.target));
+            } else {
+                let mut s = hub.spool.lock().unwrap();
+                let i = at.min(s.msgs.len());
+                s.msgs.insert(i, m);
+                hub.save_spool(&s);
+                drop(s);
+                hub.arrived.notify_waiters();
             }
         }
     }
@@ -696,7 +747,13 @@ async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &st
         } else {
             format!("[letagents · verified {from_addr}]")
         };
-        if let Ok(s) = proxy.send(&target, &format!("{header}\n\n{}", inner.body), None, ask).await {
+        let sent = proxy.send(&target, &format!("{header}\n\n{}", inner.body), None, ask).await;
+        match &sent {
+            Ok(s) if !s.delivered => log(format!("intercom -> {target}: broker refused: {}", s.reason.clone().unwrap_or_default())),
+            Err(e) => log(format!("intercom -> {target}: {e}")),
+            _ => {}
+        }
+        if let Ok(s) = sent {
             if s.delivered {
                 if ask {
                     hub.remote_ask_by_local.lock().unwrap().insert(s.id, (contact.to_string(), inner.id.clone()));

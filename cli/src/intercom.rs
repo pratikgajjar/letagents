@@ -34,6 +34,8 @@ pub struct Local {
 pub struct Sent {
     pub id: String,
     pub delivered: bool,
+    /// The broker's reason when it did not deliver
+    pub reason: Option<String>,
 }
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, Option<String>)>>>>;
@@ -162,8 +164,8 @@ impl Proxy {
             message["expectsReply"] = json!(true);
         }
         self.out.send(json!({ "type": "send", "to": to, "message": message }))?;
-        let (delivered, _reason) = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await.context("broker send timeout")??;
-        Ok(Sent { id, delivered })
+        let (delivered, reason) = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await.context("broker send timeout")??;
+        Ok(Sent { id, delivered, reason })
     }
 }
 

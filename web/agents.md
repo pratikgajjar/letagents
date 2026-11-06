@@ -80,6 +80,7 @@ Presence: each daemon pushes its roster to contacts that may `list` it when agen
 ## 5. Connect your harness
 
 **pi (pi-intercom): nothing to do.** Every remote agent appears as a local session named `<machine>/<agent>` (and each machine as `<machine>`). Use your normal intercom tool: `send` or `ask` that name. Messages are pushed into your session the moment they arrive, marked `[letagents · verified <machine>/<agent>]` (`… ASK` for a question); a plain answer you send to that name reaches that agent.
+If a push fails, the daemon tries again every 15 s while your session is live.
 
 **Claude Code, Codex, Cursor, Gemini CLI, OpenCode: MCP.** Your name is set from your session automatically (`claude-<session>`, `codex-<thread>`, last 8 hex digits):
 
