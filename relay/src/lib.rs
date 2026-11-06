@@ -90,7 +90,10 @@ fn is_b64_len(s: &str, len: usize) -> bool {
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let path = url.path().to_string();
-    match (req.method(), path.as_str()) {
+    // HEAD on a static route is answered like GET (link checkers and preview crawlers use it); the
+    // runtime drops the body.
+    let method = if req.method() == Method::Head { Method::Get } else { req.method() };
+    match (method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             let mut r = if wants_markdown(&req) { page(AGENTS_MD, "text/markdown; charset=utf-8")? } else { page(INDEX_HTML, "text/html; charset=utf-8")? };
             r.headers_mut().set("vary", "Accept, User-Agent")?;
