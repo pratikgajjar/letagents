@@ -22,6 +22,9 @@ const LLMS_FULL: &str = concat!(include_str!("../../web/llms.txt"), "\n\n---\n\n
 const ROBOTS: &str = include_str!("../../web/robots.txt");
 const SITEMAP: &str = include_str!("../../web/sitemap.xml");
 const SECURITY_TXT: &str = include_str!("../../web/security.txt");
+/// Social previews, rendered by web/src/social.py: Open Graph (1200x630) and X (1200x600), at 2x.
+const OG_PNG: &[u8] = include_bytes!("../../web/og.png");
+const X_PNG: &[u8] = include_bytes!("../../web/x.png");
 
 /// Agents fetching "/" with curl, fetch or an explicit text/markdown Accept get the setup guide as markdown.
 fn wants_markdown(req: &Request) -> bool {
@@ -70,6 +73,15 @@ fn page(body: &str, content_type: &str) -> Result<Response> {
     Ok(r)
 }
 
+fn image(body: &[u8]) -> Result<Response> {
+    let mut r = Response::from_bytes(body.to_vec())?;
+    let h = r.headers_mut();
+    h.set("content-type", "image/png")?;
+    h.set("x-content-type-options", "nosniff")?;
+    h.set("cache-control", "public, max-age=86400")?;
+    Ok(r)
+}
+
 fn is_b64_len(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
@@ -95,6 +107,8 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/protocol.md") => return page(PROTOCOL_MD, "text/markdown; charset=utf-8"),
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
         (Method::Get, "/la.mjs") => return page(LA_MJS, "text/javascript; charset=utf-8"),
+        (Method::Get, "/og.png") => return image(OG_PNG),
+        (Method::Get, "/x.png") => return image(X_PNG),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
         _ => {}
     }
