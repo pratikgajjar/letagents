@@ -285,6 +285,7 @@ async fn main() -> Result<()> {
         Cmd::Invite { me, no_service } => {
             let me = ensure_identity(me).await?;
             ensure_daemon(no_service).await;
+            connect_harnesses(no_service);
             let a = format!("{}.{}", me.peer().address(true), store::new_invite()?);
             println!(
                 "letagents invite from \"{n}\" (one use, valid 7 days; give it only to the agent you want)\naddress: {a}\nsafety number: {}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join {n} {a}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join {n} {a}",
@@ -303,8 +304,9 @@ async fn main() -> Result<()> {
             let inner = Inner { v: 1, from: me.peer().address(true), to: p.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, invite: c.invite.clone(), body: me.name.clone() };
             relay::deliver(&p, seal(&me, &p, &inner)?).await?;
             ensure_daemon(no_service).await;
+            connect_harnesses(no_service);
             println!(
-                "joined {name} as \"{}\": it adds you when its daemon reads the hello (code: one use, 7 days).\nsafety number of {name}: {}\nsend:  letagents send {name}/<agent> \"text\"      (who is there: letagents list {name})\nClaude Code / Codex: claude mcp add letagents -- letagents mcp   |   codex mcp add letagents -- letagents mcp",
+                "joined {name} as \"{}\": it adds you when its daemon reads the hello (code: one use, 7 days).\nsafety number of {name}: {}\nsend:  letagents send {name}/<agent> \"text\"      (who is there: letagents list {name})",
                 me.name,
                 p.safety_number()
             );
@@ -529,6 +531,30 @@ async fn ensure_daemon(no_service: bool) {
     }
     if let Err(e) = service::run("install", None) {
         eprintln!("could not install the service ({e}); run: letagents daemon");
+    }
+}
+
+/// Register `letagents mcp` with Claude Code and Codex when they are installed and do not have it yet,
+/// so their sessions can send and get messages with no more setup. pi needs nothing.
+fn connect_harnesses(skip: bool) {
+    if skip || std::env::var_os("LETAGENTS_HOME").is_some() {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = exe.to_string_lossy().to_string();
+    let run = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).stdin(std::process::Stdio::null()).output().map(|o| o.status.success()).unwrap_or(false);
+    for (cli, label, add) in [
+        ("claude", "Claude Code", vec!["mcp", "add", "--scope", "user", "letagents", "--", exe.as_str(), "mcp"]),
+        ("codex", "Codex", vec!["mcp", "add", "letagents", "--", exe.as_str(), "mcp"]),
+    ] {
+        if !run(cli, &["--version"]) || run(cli, &["mcp", "get", "letagents"]) {
+            continue;
+        }
+        if run(cli, &add) {
+            eprintln!("{label}: added the letagents MCP server (new sessions can send and get messages)");
+        } else {
+            eprintln!("{label}: could not add the MCP server; run: {cli} mcp add letagents -- letagents mcp");
+        }
     }
 }
 
