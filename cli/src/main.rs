@@ -28,8 +28,28 @@ enum Cmd {
     Init { name: String },
     /// Show this machine's address and safety number
     Whoami,
-    /// Print an invite with a one-time code (valid 7 days): whoever uses it is added as a contact at once
-    Invite,
+    /// Print an invite with a one-time code (valid 7 days): whoever uses it is added as a contact at once.
+    /// Creates this machine's keys and starts the daemon first if needed.
+    Invite {
+        /// This machine's name if it has no keys yet (default: host name)
+        #[arg(long)]
+        me: Option<String>,
+        /// Do not install the background service
+        #[arg(long)]
+        no_service: bool,
+    },
+    /// Join with an invite: create keys if needed, add the inviter, send hello with its code, start the daemon
+    Join {
+        /// Name for the inviting machine
+        name: String,
+        invite: String,
+        /// This machine's name if it has no keys yet (default: host name)
+        #[arg(long)]
+        me: Option<String>,
+        /// Do not install the background service
+        #[arg(long)]
+        no_service: bool,
+    },
     /// Manage trusted contacts (machines)
     Contact {
         #[command(subcommand)]
@@ -262,20 +282,39 @@ async fn main() -> Result<()> {
             whoami()
         }
         Cmd::Whoami => whoami(),
-        Cmd::Invite => {
-            let me = store::identity()?;
+        Cmd::Invite { me, no_service } => {
+            let me = ensure_identity(me).await?;
+            ensure_daemon(no_service).await;
             let a = format!("{}.{}", me.peer().address(true), store::new_invite()?);
             println!(
-                "letagents invite from \"{n}\" (one use, valid 7 days; share it only with the agent you want)\naddress: {a}\nsafety number: {}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add {n} {a} && letagents hello {n}\nNo install: curl -fsSL https://letagents.talk/la.mjs | node - <same commands>",
+                "letagents invite from \"{n}\" (one use, valid 7 days; give it only to the agent you want)\naddress: {a}\nsafety number: {}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join {n} {a}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join {n} {a}",
                 me.peer().safety_number(),
                 n = me.name
+            );
+            Ok(())
+        }
+        Cmd::Join { name, invite, me, no_service } => {
+            if store::split_invite(&invite).1.is_none() {
+                bail!("this is an address without an invite code; ask for a new invite (letagents invite), or use: letagents contact add {name} <address>");
+            }
+            let me = ensure_identity(me).await?;
+            let p = add_contact(&name, &invite, "send,ask,reply,list", None)?;
+            let c = store::contacts().get(&name).cloned().context("contact")?;
+            let inner = Inner { v: 1, from: me.peer().address(true), to: p.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, invite: c.invite.clone(), body: me.name.clone() };
+            relay::deliver(&p, seal(&me, &p, &inner)?).await?;
+            ensure_daemon(no_service).await;
+            println!(
+                "joined {name} as \"{}\": it adds you when its daemon reads the hello (code: one use, 7 days).\nsafety number of {name}: {}\nsend:  letagents send {name}/<agent> \"text\"      (who is there: letagents list {name})\nClaude Code / Codex: claude mcp add letagents -- letagents mcp   |   codex mcp add letagents -- letagents mcp",
+                me.name,
+                p.safety_number()
             );
             Ok(())
         }
         Cmd::Contact { cmd } => match cmd {
             ContactCmd::Add { name, address, allow, session } => {
                 let p = add_contact(&name, &address, &allow, session)?;
-                println!("added {name}; safety number {} (confirm it with their human over a channel you trust); restart the daemon to load it", p.safety_number());
+                let _ = daemon::call(json!({ "op": "reload" })).await;
+                println!("added {name}; safety number {} (compare it with their human if the address came through a channel you do not trust)", p.safety_number());
                 Ok(())
             }
             ContactCmd::Accept { request, name, allow } => {
@@ -283,7 +322,8 @@ async fn main() -> Result<()> {
                 let r = reqs.remove(&request).with_context(|| format!("no request {request}; see `letagents requests`"))?;
                 add_contact(&name, &r.address, &allow, None)?;
                 store::write("requests.json", &reqs)?;
-                println!("accepted {name} ({}); restart the daemon to load it", r.safety);
+                let _ = daemon::call(json!({ "op": "reload" })).await;
+                println!("accepted {name} ({})", r.safety);
                 Ok(())
             }
             ContactCmd::Ls => {
@@ -452,6 +492,43 @@ async fn main() -> Result<()> {
         Cmd::Daemon { notify } => daemon::run(store::identity()?, notify).await,
         Cmd::Service { action, notify } => service::run(&action, notify.as_deref()),
         Cmd::Mcp { as_ } => mcp::run(as_).await,
+    }
+}
+
+/// This machine's keys, created on first use (name: --me, else the host name). A new mailbox is opened
+/// at once, so contacts can write before the daemon first runs.
+async fn ensure_identity(name: Option<String>) -> Result<Identity> {
+    if let Ok(me) = store::identity() {
+        return Ok(me);
+    }
+    let name = name.unwrap_or_else(host_name);
+    let me = store::create_identity(&name)?;
+    if let Err(e) = relay::fetch(&me).await {
+        eprintln!("warning: relay not reached ({e}); the daemon opens the mailbox when it starts");
+    }
+    eprintln!("created keys for \"{name}\" in {} (they never leave this machine)", store::home().display());
+    Ok(me)
+}
+
+/// Short host name: lower case letters, digits and '-'.
+fn host_name() -> String {
+    let h = std::process::Command::new("hostname").arg("-s").output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let h: String = h.trim().to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let h: String = h.trim_matches('-').chars().take(24).collect();
+    if h.is_empty() { "machine".into() } else { h }
+}
+
+/// Start the background service unless it runs (or --no-service, or a custom LETAGENTS_HOME: the service
+/// uses ~/.letagents). If it runs, it loads new contacts.
+async fn ensure_daemon(no_service: bool) {
+    if daemon::call(json!({ "op": "reload" })).await.is_ok() {
+        return;
+    }
+    if no_service || std::env::var_os("LETAGENTS_HOME").is_some() || !(cfg!(target_os = "macos") || cfg!(target_os = "linux")) {
+        return eprintln!("no daemon running: start it with `letagents service install` (or `letagents daemon`)");
+    }
+    if let Err(e) = service::run("install", None) {
+        eprintln!("could not install the service ({e}); run: letagents daemon");
     }
 }
 

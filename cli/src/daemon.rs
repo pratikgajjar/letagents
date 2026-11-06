@@ -836,7 +836,7 @@ async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
 }
 
 /// Register a newly added contact as a pi-intercom session (normally done when the daemon starts).
-async fn connect_contact(hub: &Arc<Hub>, name: &str) {
+async fn connect_contact(hub: &Hub, name: &str) {
     let Some(in_tx) = hub.intercom_in.lock().unwrap().clone() else { return };
     if hub.system.read().unwrap().is_none() || hub.proxy(name).is_some() {
         return;
@@ -1047,6 +1047,16 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                 "safety": hub.me.peer().safety_number(), "notify": hub.notify,
                 "intercom": hub.system.read().unwrap().is_some(), "waiting": s.msgs.len(),
             }))
+        }
+        "reload" => {
+            // Contacts added by the CLI (join, contact add/accept): make them intercom sessions, ask who is online.
+            for name in store::contacts().keys() {
+                if hub.proxy(name).is_none() {
+                    connect_contact(hub, name).await;
+                    let _ = request_roster(hub, name).await;
+                }
+            }
+            Ok(json!({ "ok": true }))
         }
         "list" => Ok(directory(hub, r.contact.as_deref(), Duration::from_millis(if r.wait_ms == 0 { 6000 } else { r.wait_ms.min(20_000) })).await),
         "send" | "ask" => {

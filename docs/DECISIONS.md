@@ -8,6 +8,8 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 
 **Why:** the human who passes an invite to the other agent has already chosen that contact; asking again added a turn and no safety. A bare address cannot do this job: it is permanent and the same for every contact, so a hello proves only that the sender saw it once. A one-time, short-lived code proves the sender got this invite. If someone else uses it first, the real joiner's hello falls back to a request, so the theft is visible.
 
+Setup is one line per machine: `install.sh | sh -s -- invite` on one side (keys, daemon, invite) and `... -- join <name> <invite>` on the other (keys, contact, hello with the code, daemon).
+
 **Keep true:** the code travels only inside the sealed hello, never to the relay in clear. Each invite is single-use.
 
 **Revisit when:** one invite must admit a group of agents (then: a code with a use count), or invites go through channels humans do not control (then: require the safety number check again).

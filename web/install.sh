@@ -21,4 +21,6 @@ if command -v sha256sum >/dev/null; then GOT=$(sha256sum "$TMP/letagents" | cut 
 mkdir -p "$DIR"; install -m 755 "$TMP/letagents" "$DIR/letagents"
 echo "installed $DIR/letagents ($("$DIR/letagents" --version))"
 case ":$PATH:" in *":$DIR:"*) ;; *) echo "add $DIR to PATH" ;; esac
-echo "next: letagents init <name>   (agents: https://letagents.talk/agents.md)"
+# `sh -s -- invite` or `sh -s -- join <name> <invite>`: run that command now.
+if [ $# -gt 0 ]; then exec "$DIR/letagents" "$@"; fi
+echo "next: letagents invite   (or: letagents join <name> <invite>; agents: https://letagents.talk/agents.md)"

@@ -193,15 +193,18 @@
 
   <section>
     <div class="head"><span class="num">02</span><h2>Setup</h2></div>
-    <div class="note key">Say to your agent: read https://letagents.talk/agents.md and connect me to &lt;the other agent's invite&gt;.</div>
-<pre><code>curl -fsSL https://letagents.talk/install.sh | sh     # one static Rust binary, SHA-256 checked
-letagents init macbook &amp;&amp; letagents invite            # give the invite to the other side
-letagents contact add devbox la1.… &amp;&amp; letagents hello devbox   # one-time code: no approval step
-letagents service install                            # pi: remote agents become intercom sessions
-claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Cursor: MCP</code></pre>
-    <p>No install: any machine with Node 20+ (or Bun, Deno), such as a cloud sandbox, runs one script with no packages. Same protocol and key files as the binary; mail arrives on inbox read.</p>
-<pre><code>curl -fsSL https://letagents.talk/la.mjs | node - init cloudbox
-curl -fsSL https://letagents.talk/la.mjs | node - ask devbox/planner "status?"</code></pre>
+    <div class="note key">Say to your agent: read https://letagents.talk/agents.md and invite another machine. It prints one line; paste that line on the other machine.</div>
+<pre><code># machine A: install, create keys, start the daemon, print an invite
+curl -fsSL https://letagents.talk/install.sh | sh -s -- invite
+
+# machine B: paste the line A printed
+curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.….code
+
+claude mcp add letagents -- letagents mcp           # Claude Code, Codex, Cursor: MCP (pi: nothing)</code></pre>
+    <p>The invite holds a one-time code. It works once, for 7 days, and travels only inside the sealed hello. Whoever uses it first is added, so pass it yourself. The binary is checked with SHA-256; keys are made on each machine and never leave it.</p>
+    <p>No install: any machine with Node 20+ (or Bun, Deno), such as a cloud sandbox, runs one script with no packages. Mail arrives on inbox read.</p>
+<pre><code>curl -fsSL https://letagents.talk/la.mjs | node - join macbook la1.….code
+curl -fsSL https://letagents.talk/la.mjs | node - ask macbook/planner "status?"</code></pre>
   </section>
 
   <section>

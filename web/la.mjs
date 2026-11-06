@@ -10,6 +10,7 @@ const USAGE = `usage: node la.mjs <command>
   init <name>                         create this machine's keys
   whoami                              show address and safety number
   invite                              address + one-time code (7 days): its user is added at once
+  join <name> <invite> [--me <name>]  keys if needed, add the inviter, send hello with its code
   contact add <name> <address|invite> [--allow send,ask,reply,list]
   contact ls | requests | contact accept <request-id> <name>
   hello <contact>                     send our address so they can add us
@@ -74,6 +75,20 @@ const write = (name, v) => {
 const importPriv = (alg, raw) => subtle.importKey("pkcs8", cat(hex(PKCS8[alg]), raw), { name: alg }, true, alg === "Ed25519" ? ["sign"] : ["deriveBits"]);
 const pubOf = async (key) => unb64((await subtle.exportKey("jwk", key)).x, 32);
 
+// New keys; the first login creates the mailbox, so contacts can write before our first `inbox`.
+async function createMe(name) {
+  write("identity.json", { name, sig: b64(rand(32)), rcv: b64(rand(32)), drop: b64(rand(16)) });
+  await fetchInbox(await loadMe()).catch((e) => console.error(`warning: relay not reached (${e.message}); run inbox once later`));
+}
+// Our keys, created on first use (name: --me, else the host name).
+async function ensureMe(name) {
+  if (!fs.existsSync(`${HOME}/identity.json`)) {
+    const host = (await import("node:os")).hostname().split(".")[0].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+    await createMe(name || host || "machine");
+    console.error(`created keys for "${name || host || "machine"}" in ${HOME} (they never leave this machine)`);
+  }
+  return loadMe();
+}
 async function loadMe() {
   const j = read("identity.json", null);
   if (!j) die(`no identity in ${HOME}; run: init <name>`);
@@ -359,17 +374,24 @@ async function main() {
     case "init": {
       if (!a) die(USAGE);
       if (fs.existsSync(`${HOME}/identity.json`)) die(`${HOME}/identity.json exists; refusing to overwrite keys`);
-      write("identity.json", { name: a, sig: b64(rand(32)), rcv: b64(rand(32)), drop: b64(rand(16)) });
-      // The first login creates the mailbox, so contacts can write before our first `inbox`.
-      await fetchInbox(await loadMe()).catch((e) => console.error(`warning: relay not reached (${e.message}); run inbox once later`));
+      await createMe(a);
     } // fall through: show the new identity
     case "whoami": {
       const me = await loadMe();
       return console.log(`name:          ${me.name}\naddress:       ${address(me, true)}\nsafety number: ${await safety(me)}\nrelay:         ${RELAY}`);
     }
     case "invite": {
-      const me = await loadMe(), addr = `${address(me, true)}.${await newInvite()}`;
-      return console.log(`letagents invite from "${me.name}" (one use, valid 7 days; share it only with the agent you want)\naddress: ${addr}\nsafety number: ${await safety(me)}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add ${me.name} ${addr} && letagents hello ${me.name}`);
+      const me = await ensureMe(flags.me), addr = `${address(me, true)}.${await newInvite()}`;
+      return console.log(`letagents invite from "${me.name}" (one use, valid 7 days; give it only to the agent you want)\naddress: ${addr}\nsafety number: ${await safety(me)}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join ${me.name} ${addr}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join ${me.name} ${addr}\nThis script has no daemon: run inbox to receive the other side's hello and mail.`);
+    }
+    case "join": {
+      if (!a || !b) die(USAGE);
+      const [, code] = splitInvite(b);
+      if (!code) die(`this is an address without an invite code; ask for a new invite, or use: contact add ${a} <address>`);
+      const me = await ensureMe(flags.me);
+      addContact(a, b, "send,ask,reply,list");
+      await compose(me, a, "hello", me.name, { full: true, invite: code });
+      return console.log(`joined ${a} as "${me.name}": it adds you when it reads the hello (code: one use, 7 days).\nsafety number of ${a}: ${await safety(parsePeer(splitInvite(b)[0]))}\nsend:  node la.mjs send ${a}/<agent> "text" --as <you>     read: node la.mjs inbox --as <you> --wait 30`);
     }
     case "contact": {
       if (a === "add" && b && pos[3]) {

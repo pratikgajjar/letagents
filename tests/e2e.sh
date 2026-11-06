@@ -152,8 +152,8 @@ fi
 # carol uses alice's invite: alice's daemon adds her at once. dave reuses the same invite: only a request.
 INV=$(la alice invite | sed -n 's/^address: *//p')
 check "invite has a 5th part (the code)" test "$(tr -cd . <<<"$INV" | wc -c | tr -d ' ')" = 4
-la carol init carol >/dev/null && la carol check >/dev/null 2>&1 # first login creates carol's mailbox
-la carol contact add alice "$INV" >/dev/null && la carol hello alice >/dev/null 2>&1
+# join: creates carol's keys and mailbox, adds alice, sends hello with the code (one command)
+la carol join alice "$INV" --me carol >"$T/join.out" 2>&1 || { fail "join: $(cat "$T/join.out")"; }
 if wait_for 20 grep -q "added contact carol .* by invite code" "$T/alice.log"; then ok "invite: alice added carol at once"; else fail "invite: carol not added"; fi
 la alice send carol/desk "hi carol" --as planner >/dev/null 2>&1
 check "invite: alice can write to carol" bash -c "LETAGENTS_HOME='$T/carol' LETAGENTS_RELAY='$RELAY' LETAGENTS_AUTH_HOST=letagents.talk '$BIN' check 2>/dev/null | grep -q 'hi carol'"
