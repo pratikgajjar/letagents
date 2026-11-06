@@ -1,6 +1,6 @@
 //! Local state in ~/.letagents (or $LETAGENTS_HOME): identity, contacts, pending requests, seen ids.
 
-use crate::crypto::{now_ms, Identity, Peer, MAX_AGE_MS};
+use crate::crypto::{b64, now_ms, sha256, Identity, Peer, MAX_AGE_MS, RULE_KINDS};
 use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -59,6 +59,68 @@ pub struct Contact {
     /// Per-agent rules. If any exist, a message must also match one: their agent (`from`), our agent (`to`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<AgentRule>,
+    /// The one-time code from their invite; sent in our hello so they add us at once
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<String>,
+}
+
+/// An invite code is valid this long, for one use.
+pub const INVITE_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
+
+/// invites.json: base64url(SHA-256(code)) -> expiry (ms). Only the hash is kept.
+type Invites = BTreeMap<String, i64>;
+
+fn invite_key(code: &str) -> String {
+    b64(&sha256(&[code.trim().as_bytes()]))
+}
+
+/// A new one-time invite code (16 random bytes, base64url), valid for 7 days.
+pub fn new_invite() -> Result<String> {
+    use rand::RngCore;
+    let mut b = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    let code = b64(&b);
+    let mut all: Invites = read("invites.json");
+    all.retain(|_, exp| *exp > now_ms());
+    all.insert(invite_key(&code), now_ms() + INVITE_TTL_MS);
+    write("invites.json", &all)?;
+    Ok(code)
+}
+
+/// Use an invite code: true once if it exists and has not expired; it is deleted either way.
+pub fn redeem_invite(code: &str) -> bool {
+    let mut all: Invites = read("invites.json");
+    let hit = all.remove(&invite_key(code)).is_some_and(|exp| exp > now_ms());
+    all.retain(|_, exp| *exp > now_ms());
+    let _ = write("invites.json", &all);
+    hit
+}
+
+/// An invite is an address with a 5th part, the code: `la1.<sig>.<box>.<drop>.<code>`.
+pub fn split_invite(addr: &str) -> (String, Option<String>) {
+    let p: Vec<&str> = addr.trim().split('.').collect();
+    if p.len() == 5 {
+        (p[..4].join("."), Some(p[4].to_string()))
+    } else {
+        (addr.trim().to_string(), None)
+    }
+}
+
+/// Add the sender of a hello that carried a valid invite code. Name: its claimed name, made unique.
+pub fn accept_invited(sender: &Peer, claimed_name: &str) -> Result<String> {
+    let base: String = claimed_name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_".contains(*c)).take(32).collect();
+    let base = if base.is_empty() { "agent".to_string() } else { base };
+    let mut all = contacts();
+    let mut name = base.clone();
+    let mut n = 2;
+    while all.contains_key(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    let allow = RULE_KINDS.iter().map(|k| k.to_string()).collect();
+    all.insert(name.clone(), Contact { address: sender.address(true), allow, session: None, added: now_ms(), rules: vec![], invite: None });
+    write("contacts.json", &all)?;
+    Ok(name)
 }
 
 /// A rule for one pair of agents. `*` matches any name; `prefix*` matches by prefix.

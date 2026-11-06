@@ -28,7 +28,7 @@ enum Cmd {
     Init { name: String },
     /// Show this machine's address and safety number
     Whoami,
-    /// Print a short invite to paste to another agent or human
+    /// Print an invite with a one-time code (valid 7 days): whoever uses it is added as a contact at once
     Invite,
     /// Manage trusted contacts (machines)
     Contact {
@@ -189,6 +189,7 @@ pub async fn compose_and_send(
         reply_to,
         from_agent,
         to_agent,
+        invite: None,
         body: body.into(),
     };
     relay::deliver(&to, seal(me, &to, &inner)?).await?;
@@ -207,13 +208,14 @@ fn add_contact(name: &str, address: &str, allow: &str, session: Option<String>) 
     if name.contains('@') || name.contains('/') {
         bail!("contact names cannot contain @ or /");
     }
-    let p = Peer::parse(address)?;
+    let (address, invite) = store::split_invite(address);
+    let p = Peer::parse(&address)?;
     if p.drop.is_none() {
         bail!("this address has no drop secret (4th part); ask for the full address");
     }
     let mut all = store::contacts();
     let rules = all.get(name).map(|c| c.rules.clone()).unwrap_or_default();
-    all.insert(name.into(), Contact { address: address.trim().into(), allow: parse_allow(allow)?, session, added: now_ms(), rules });
+    all.insert(name.into(), Contact { address, allow: parse_allow(allow)?, session, added: now_ms(), rules, invite });
     store::write("contacts.json", &all)?;
     Ok(p)
 }
@@ -232,6 +234,10 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                     "{}",
                     json!({ "from": format!("{name}/{from_agent}"), "kind": inner.kind, "id": inner.id, "reply_to": inner.reply_to, "to": inner.to_agent, "ts": inner.ts, "body": inner.body })
                 ),
+                Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") && inner.invite.as_deref().is_some_and(store::redeem_invite) => match store::accept_invited(&sender, &inner.body) {
+                    Ok(name) => eprintln!("added contact {name} ({}): it used your invite code", sender.safety_number()),
+                    Err(e) => eprintln!("invite from {}: {e}", sender.safety_number()),
+                },
                 Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") => {
                     let (rid, req) = store::record_request(&sender, &inner.body, &inner.id, inner.ts);
                     eprintln!("contact request {rid} from \"{}\" ({}); accept with your human's approval: letagents contact accept {rid} <name>", req.name, req.safety);
@@ -258,9 +264,9 @@ async fn main() -> Result<()> {
         Cmd::Whoami => whoami(),
         Cmd::Invite => {
             let me = store::identity()?;
-            let a = me.peer().address(true);
+            let a = format!("{}.{}", me.peer().address(true), store::new_invite()?);
             println!(
-                "letagents invite from \"{n}\"\naddress: {a}\nsafety number: {}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add {n} {a} && letagents hello {n}",
+                "letagents invite from \"{n}\" (one use, valid 7 days; share it only with the agent you want)\naddress: {a}\nsafety number: {}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add {n} {a} && letagents hello {n}\nNo install: curl -fsSL https://letagents.talk/la.mjs | node - <same commands>",
                 me.peer().safety_number(),
                 n = me.name
             );
@@ -358,11 +364,17 @@ async fn main() -> Result<()> {
         }
         Cmd::Hello { contact } => {
             let me = store::identity()?;
-            // A hello carries our full address (with drop) so the other side can write back.
-            let to = Peer::parse(&store::contacts().get(&contact).with_context(|| format!("no contact {contact}"))?.address)?;
-            let inner = Inner { v: 1, from: me.peer().address(true), to: to.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, body: me.name.clone() };
+            // A hello carries our full address (with drop) so the other side can write back, and the invite
+            // code we got with their address, if any.
+            let c = store::contacts().get(&contact).cloned().with_context(|| format!("no contact {contact}"))?;
+            let to = Peer::parse(&c.address)?;
+            let inner = Inner { v: 1, from: me.peer().address(true), to: to.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, invite: c.invite.clone(), body: me.name.clone() };
             relay::deliver(&to, seal(&me, &to, &inner)?).await?;
-            println!("hello sent to {contact}; they must accept it before your messages reach their agents");
+            if c.invite.is_some() {
+                println!("hello sent to {contact} with its invite code; it adds you at once if the code is unused and less than 7 days old");
+            } else {
+                println!("hello sent to {contact}; they must accept it before your messages reach their agents");
+            }
             Ok(())
         }
         Cmd::List { contact, json: as_json } => {

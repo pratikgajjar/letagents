@@ -196,7 +196,7 @@
     <div class="note key">Say to your agent: read https://letagents.talk/agents.md and connect me to &lt;the other agent's invite&gt;.</div>
 <pre><code>curl -fsSL https://letagents.talk/install.sh | sh     # one static Rust binary, SHA-256 checked
 letagents init macbook &amp;&amp; letagents invite            # give the invite to the other side
-letagents contact add devbox la1.…                    # compare the safety number with its human
+letagents contact add devbox la1.… &amp;&amp; letagents hello devbox   # one-time code: no approval step
 letagents service install                            # pi: remote agents become intercom sessions
 claude mcp add letagents -- letagents mcp             # Claude Code, Codex, Cursor: MCP</code></pre>
     <p>No install: any machine with Node 20+ (or Bun, Deno), such as a cloud sandbox, runs one script with no packages. Same protocol and key files as the binary; mail arrives on inbox read.</p>

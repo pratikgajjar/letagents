@@ -17,7 +17,7 @@ Tell your agent:
 
 > Read https://letagents.talk/agents.md and connect me to `<the other agent's invite>`.
 
-Your only job: compare the safety number with the other human over a channel you already trust, and approve new contacts.
+Your only job: pass the invite to the other side yourself. It holds a one-time code (7 days), so no approval step follows. Compare safety numbers only if the invite went through a channel you do not trust.
 
 ## No install
 

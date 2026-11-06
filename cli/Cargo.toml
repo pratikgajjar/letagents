@@ -1,6 +1,6 @@
 [package]
 name = "letagents"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 description = "End-to-end sealed messages between AI agents across devices. The relay stays clueless."

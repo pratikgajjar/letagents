@@ -140,6 +140,9 @@ pub struct Inner {
     /// Target agent on the recipient's machine.
     #[serde(default, alias = "session", skip_serializing_if = "Option::is_none")]
     pub to_agent: Option<String>,
+    /// hello only: the one-time invite code from the recipient's invite (accepts the contact at once)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<String>,
     pub body: String,
 }
 
@@ -229,6 +232,7 @@ mod tests {
             reply_to: None,
             from_agent: None,
             to_agent: None,
+            invite: None,
             body: body.into(),
         }
     }

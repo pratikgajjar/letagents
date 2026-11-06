@@ -806,9 +806,25 @@ async fn on_roster(hub: &Arc<Hub>, contact: &str, inner: Inner) {
     sync_agent_proxies(hub, contact, &agents).await;
 }
 
-async fn hello(hub: &Hub, inner: Inner, sender: Peer) {
-    if store::contact_of(&sender).is_ok() {
-        return log("hello from a known contact");
+async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
+    match store::contact_of(&sender) {
+        Ok(_) => return log("hello from a known contact"),
+        // A known id with a different key: never re-add it through an invite.
+        Err(e) if !e.starts_with("unknown sender") => return log(format!("hello refused: {e}")),
+        Err(_) => {}
+    }
+    // A valid one-time invite code from our `letagents invite`: the human who shared it approved this contact.
+    if inner.invite.as_deref().is_some_and(store::redeem_invite) {
+        let note = match store::accept_invited(&sender, &inner.body) {
+            Ok(name) => {
+                log(format!("added contact {name} ({}) by invite code", sender.safety_number()));
+                connect_contact(hub, &name).await;
+                let _ = request_roster(hub, &name).await;
+                format!("[letagents] added contact {name} (safety number {}): it used your invite code. Remove it with: letagents contact rm {name}", sender.safety_number())
+            }
+            Err(e) => return log(format!("invite: could not add contact: {e}")),
+        };
+        return notify(hub, &inner.id, note).await;
     }
     let (rid, req) = store::record_request(&sender, &inner.body, &inner.id, inner.ts);
     log(format!("contact request {rid} from \"{}\" ({})", req.name, req.safety));
@@ -816,8 +832,31 @@ async fn hello(hub: &Hub, inner: Inner, sender: Peer) {
         "[letagents] contact request {rid} from an agent calling itself \"{}\", safety number {}.\nAsk your human to confirm this safety number with them, then run: letagents contact accept {rid} <name>",
         req.name, req.safety
     );
+    notify(hub, &inner.id, note).await;
+}
+
+/// Register a newly added contact as a pi-intercom session (normally done when the daemon starts).
+async fn connect_contact(hub: &Arc<Hub>, name: &str) {
+    let Some(in_tx) = hub.intercom_in.lock().unwrap().clone() else { return };
+    if hub.system.read().unwrap().is_none() || hub.proxy(name).is_some() {
+        return;
+    }
+    let Some(address) = store::contacts().get(name).map(|c| c.address.clone()) else { return };
+    let (ignore_tx, _ignore_rx) = mpsc::unbounded_channel::<String>();
+    match Proxy::connect(name, &stable_session_id(&address), in_tx, ignore_tx).await {
+        Ok(p) => {
+            hub.proxies.write().unwrap().insert(name.to_string(), p);
+        }
+        Err(e) => log(format!("intercom session \"{name}\" failed: {e}")),
+    }
+}
+
+/// A note for the human: kept in the machine inbox, and also told to the --notify agent if there is one.
+async fn notify(hub: &Hub, id: &str, note: String) {
+    let inner_id = id.to_string();
+    let inner_ts = now_ms();
     // The machine inbox always keeps it; the --notify agent (if any) is also told.
-    hub.spool(Spooled { id: inner.id.clone(), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: MACHINE_INBOX.into(), text: note.clone(), ts: inner.ts, reply_to: None }, None);
+    hub.spool(Spooled { id: inner_id.clone(), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: MACHINE_INBOX.into(), text: note.clone(), ts: inner_ts, reply_to: None }, None);
     let Some(notify) = hub.notify.clone() else { return };
     let system = hub.system.read().unwrap().clone();
     let delivered = match system {
@@ -825,7 +864,7 @@ async fn hello(hub: &Hub, inner: Inner, sender: Peer) {
         None => false,
     };
     if !delivered {
-        hub.hand_over(Spooled { id: format!("{}:{notify}", inner.id), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: notify, text: note, ts: inner.ts, reply_to: None }, None).await;
+        hub.hand_over(Spooled { id: format!("{inner_id}:{notify}"), from: SYSTEM_SESSION.into(), kind: "notice".into(), target: notify, text: note, ts: inner_ts, reply_to: None }, None).await;
     }
 }
 

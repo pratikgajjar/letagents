@@ -2,6 +2,16 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 9. One-time invite codes replace the approval step
+
+**Decision:** `letagents invite` adds a one-time code to the address (`la1.<sig>.<box>.<drop>.<code>`). The code works once, for 7 days. A `hello` that carries it is accepted at once; no `contact accept`. The inviter stores only SHA-256 of the code. A hello without a valid code still needs a human to accept it. Decision 3 still holds for everything after the contact exists.
+
+**Why:** the human who passes an invite to the other agent has already chosen that contact; asking again added a turn and no safety. A bare address cannot do this job: it is permanent and the same for every contact, so a hello proves only that the sender saw it once. A one-time, short-lived code proves the sender got this invite. If someone else uses it first, the real joiner's hello falls back to a request, so the theft is visible.
+
+**Keep true:** the code travels only inside the sealed hello, never to the relay in clear. Each invite is single-use.
+
+**Revisit when:** one invite must admit a group of agents (then: a code with a use count), or invites go through channels humans do not control (then: require the safety number check again).
+
 ## 8. Never guess the receiving agent
 
 **Decision:** the daemon has no default agent for mail. A send or ask must name an agent (`<machine>/<agent>`), continue a conversation (an agent there wrote to the sender in the last hour), or match the contact's configured `--session`. Anything else is refused with `name an agent`. A reply goes to the asker by ask id; the link is stored in `spool.json` for 48 h, so it survives a timeout and a restart. A reply with no known ask, and a CLI call with no agent name, use the machine inbox (`inbox`), which is never pushed. `daemon --target` became `--notify`: it only gets contact requests.

@@ -64,12 +64,22 @@ zed init zed >/dev/null || die "init zed (la.mjs)"
 A_ADDR=$(la alice whoami | sed -n 's/^address: *//p')
 Z_ADDR=$(zed whoami | sed -n 's/^address: *//p')
 check "same address from la.mjs and the binary" test "$(la zed whoami | sed -n 's/^address: *//p')" = "$Z_ADDR"
-la alice contact add zed "$Z_ADDR" >/dev/null || die "alice adds zed"
-zed contact add alice "$A_ADDR" >/dev/null || die "zed adds alice (la.mjs)"
+# zed (la.mjs) joins with alice's one-time invite; alice's daemon adds zed when it reads the hello.
+A_INV=$(la alice invite | sed -n 's/^address: *//p')
+zed contact add alice "$A_INV" >/dev/null || die "zed adds alice by invite (la.mjs)"
 
 la alice daemon >"$T/alice.log" 2>&1 &
 PIDS+=($!)
 wait_for 30 grep -q "inbox: connected" "$T/alice.log" || die "alice daemon did not connect"
+zed hello alice >/dev/null || die "zed hello"
+if wait_for 20 grep -q "added contact zed .* by invite code" "$T/alice.log"; then ok "daemon redeems a la.mjs hello with its invite code"; else die "alice did not add zed by invite"; fi
+
+# yan (binary, no daemon) joins zed (la.mjs) with zed's invite; zed redeems it on its next inbox read.
+la yan init yan >/dev/null && la yan check >/dev/null 2>&1
+Z_INV=$(zed invite | sed -n 's/^address: *//p')
+la yan contact add zed "$Z_INV" >/dev/null && la yan hello zed >/dev/null 2>&1
+zed inbox --as cloud >/dev/null 2>"$T/z_inv.err"
+check "la.mjs redeems an invite code ($(cat "$T/z_inv.err" | head -1))" grep -q "added contact yan .*invite code" "$T/z_inv.err"
 
 # ---------- la.mjs -> daemon: send ----------
 zed send alice/planner "hello from zed" --as cloud >"$T/send.out" 2>&1

@@ -8,8 +8,9 @@
 
 const USAGE = `usage: node la.mjs <command>
   init <name>                         create this machine's keys
-  whoami | invite                     show address and safety number
-  contact add <name> <address> [--allow send,ask,reply,list]
+  whoami                              show address and safety number
+  invite                              address + one-time code (7 days): its user is added at once
+  contact add <name> <address|invite> [--allow send,ask,reply,list]
   contact ls | requests | contact accept <request-id> <name>
   hello <contact>                     send our address so they can add us
   send <machine>[/<agent>] <text>     note (flags: --as <your agent name>)
@@ -197,23 +198,44 @@ function authorize(sender, kind, from, to) {
   }
   return k;
 }
-function addContact(name, addr, allow) {
+// An invite is an address with a 5th part, the one-time code: la1.<sig>.<box>.<drop>.<code>.
+const splitInvite = (addr) => {
+  const p = addr.trim().split(".");
+  return p.length === 5 ? [p.slice(0, 4).join("."), p[4]] : [addr.trim(), undefined];
+};
+// invites.json: base64url(SHA-256(code)) -> expiry ms (same file as the binary). Only the hash is kept.
+const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
+const inviteKey = async (code) => b64(await sha256(new TextEncoder().encode(code.trim())));
+async function newInvite() {
+  const code = b64(rand(16)), all = Object.fromEntries(Object.entries(read("invites.json", {})).filter(([, exp]) => exp > Date.now()));
+  all[await inviteKey(code)] = Date.now() + INVITE_TTL_MS;
+  write("invites.json", all);
+  return code;
+}
+async function redeemInvite(code) {
+  const all = read("invites.json", {}), k = await inviteKey(code), hit = all[k] > Date.now();
+  delete all[k];
+  write("invites.json", Object.fromEntries(Object.entries(all).filter(([, exp]) => exp > Date.now())));
+  return hit;
+}
+function addContact(name, full, allow) {
   if (/[@/]/.test(name)) throw new Error("contact names cannot contain @ or /");
+  const [addr, invite] = splitInvite(full);
   if (!parsePeer(addr).drop) throw new Error("this address has no drop secret (4th part); ask for the full address");
   const kinds = allow.split(",").map((s) => s.trim()).filter(Boolean);
   const bad = kinds.find((k) => !RULE_KINDS.includes(k));
   if (bad) throw new Error(`allow takes ${RULE_KINDS.join(",")} (got ${bad})`);
   const all = read("contacts.json", {});
-  all[name] = { ...all[name], address: addr.trim(), allow: kinds, added: Date.now() };
+  all[name] = { ...all[name], address: addr, allow: kinds, added: Date.now(), ...(invite ? { invite } : {}) };
   write("contacts.json", all);
 }
 
 // ---------- messages ----------
-async function compose(me, contact, kind, body, { replyTo, fromAgent, toAgent, full } = {}) {
+async function compose(me, contact, kind, body, { replyTo, fromAgent, toAgent, full, invite } = {}) {
   const c = read("contacts.json", {})[contact];
   if (!c) throw new Error(`no contact ${contact}`);
   const to = parsePeer(c.address);
-  const inner = { v: 1, from: address(me, full), to: to.id, ts: Date.now(), id: globalThis.crypto.randomUUID(), kind, reply_to: replyTo, from_agent: fromAgent, to_agent: toAgent, body };
+  const inner = { v: 1, from: address(me, full), to: to.id, ts: Date.now(), id: globalThis.crypto.randomUUID(), kind, reply_to: replyTo, from_agent: fromAgent, to_agent: toAgent, invite, body };
   await deliver(to, await seal(me, to, inner));
   return inner.id;
 }
@@ -234,7 +256,16 @@ async function handle(me, as, want, ct, seen, got) {
   write("seen.json", seen);
   const fa = inner.from_agent || "agent";
   if (inner.kind === "hello") {
-    if (!contactOf(sender).err) return true;
+    const known = contactOf(sender);
+    if (!known.err || known.err !== "unknown sender") return true;
+    if (inner.invite && (await redeemInvite(inner.invite))) {
+      const all = read("contacts.json", {}), base = inner.body.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) || "agent";
+      let name = base;
+      for (let n = 2; all[name]; n++) name = `${base}-${n}`;
+      all[name] = { address: address(sender, true), allow: [...RULE_KINDS], added: Date.now() };
+      write("contacts.json", all);
+      return console.error(`added contact ${name} (${await safety(sender)}): it used your invite code`), true;
+    }
     const rid = inner.id.slice(0, 8), name = inner.body.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32), s = await safety(sender);
     write("requests.json", { ...read("requests.json", {}), [rid]: { address: address(sender, true), name, safety: s, ts: inner.ts } });
     return console.error(`contact request ${rid} from "${name}" (${s}); accept with your human's approval: contact accept ${rid} <name>`), true;
@@ -337,13 +368,13 @@ async function main() {
       return console.log(`name:          ${me.name}\naddress:       ${address(me, true)}\nsafety number: ${await safety(me)}\nrelay:         ${RELAY}`);
     }
     case "invite": {
-      const me = await loadMe(), addr = address(me, true);
-      return console.log(`letagents invite from "${me.name}"\naddress: ${addr}\nsafety number: ${await safety(me)}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add ${me.name} ${addr} && letagents hello ${me.name}`);
+      const me = await loadMe(), addr = `${address(me, true)}.${await newInvite()}`;
+      return console.log(`letagents invite from "${me.name}" (one use, valid 7 days; share it only with the agent you want)\naddress: ${addr}\nsafety number: ${await safety(me)}\nAgent setup: read https://letagents.talk/agents.md, then run\n  letagents contact add ${me.name} ${addr} && letagents hello ${me.name}`);
     }
     case "contact": {
       if (a === "add" && b && pos[3]) {
         addContact(b, pos[3], flags.allow || "send,ask,reply,list");
-        return console.log(`added ${b}; safety number ${await safety(parsePeer(pos[3]))} (confirm it with their human over a channel you trust)`);
+        return console.log(`added ${b}; safety number ${await safety(parsePeer(splitInvite(pos[3])[0]))} (confirm it with their human over a channel you trust)`);
       }
       if (a === "accept" && b && pos[3]) {
         const reqs = read("requests.json", {}), r = reqs[b];
@@ -364,8 +395,9 @@ async function main() {
       return;
     case "hello": {
       const me = await loadMe();
-      await compose(me, a, "hello", me.name, { full: true });
-      return console.log(`hello sent to ${a}; they must accept it before your messages reach their agents`);
+      const invite = read("contacts.json", {})[a]?.invite;
+      await compose(me, a, "hello", me.name, { full: true, invite });
+      return console.log(invite ? `hello sent to ${a} with its invite code; it adds you at once if the code is unused and less than 7 days old` : `hello sent to ${a}; they must accept it before your messages reach their agents`);
     }
     case "send":
     case "ask": {

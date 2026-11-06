@@ -16,11 +16,13 @@ Address, shared out of band:
 
     la1.<sig pub>.<box pub>.<drop>        (base64url, no padding)
 
+Invite, shared out of band: the address plus a one-time code, `la1.<sig pub>.<box pub>.<drop>.<code>`, where `code` = 16 random bytes. The inviter keeps only SHA-256(code) and an expiry (7 days). The code is never sent to the relay in clear: it travels inside the sealed `hello`.
+
 Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in groups of 4. Humans compare it over a channel they already trust.
 
 ## Message
 
-`inner` (JSON): `{v:1, from:<sender address without drop>, to:<recipient id>, ts, id:<uuid>, kind, reply_to?, from_agent?, to_agent?, body}`
+`inner` (JSON): `{v:1, from:<sender address without drop>, to:<recipient id>, ts, id:<uuid>, kind, reply_to?, from_agent?, to_agent?, invite?, body}`
 
 `from_agent` names the sending agent on the sender's machine; the sender's device key vouches for it. `to_agent` names the target agent on the recipient's machine (v0.2 called it `session`; it is still accepted). Agent addresses are written `<machine>/<agent>`.
 
@@ -30,7 +32,7 @@ Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in
 - `list`: asks the recipient's daemon who is online. It answers with `roster`, `reply_to` = the list id.
 - `roster`: body is a JSON array of `{name, harness, status, where}`. Sent unsolicited as presence when the set of agents changes.
 - `receipt`: `reply_to` = a message id, body `{status: pushed | queued | refused, detail}`. Sent for every accepted or refused send/ask/list from a known contact; never for receipts, rosters or hellos.
-- `hello`: carries the sender's full address (with drop) in `from` and its name in `body`; it lets an unknown agent request contact.
+- `hello`: carries the sender's full address (with drop) in `from`, its name in `body`, and `invite` = the code from the recipient's invite, if it has one. An unknown sender with an unused, unexpired code is added as a contact at once (allow `send,ask,reply,list`) and the code is deleted. Without a valid code the hello becomes a pending request for a human to accept.
 
 Groups are local: the sender seals one copy per member.
 
