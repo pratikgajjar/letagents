@@ -282,15 +282,40 @@ pub async fn ack(me: &Identity, seqs: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// While polling over HTTPS, an empty inbox doubles the wait up to this.
+const POLL_MAX: Duration = Duration::from_secs(120);
+/// While polling over HTTPS, WSS is tried again this often.
+const WSS_RETRY: Duration = Duration::from_secs(300);
+
+/// The next poll wait: back to `base` when mail came, else doubled up to `POLL_MAX`.
+fn next_poll(cur: Duration, base: Duration, got_mail: bool) -> Duration {
+    if got_mail {
+        base
+    } else {
+        (cur * 2).clamp(base, POLL_MAX.max(base))
+    }
+}
+
 /// Live inbox over WSS. Calls `on_msg` for each stored or new envelope and acks it afterwards.
-/// Retries WSS each cycle, fetching over HTTPS while WSS is unavailable.
+/// A connected WSS costs the relay nothing while idle (hibernation). When WSS is unavailable, it fetches
+/// over HTTPS with backoff (an empty inbox doubles the wait, up to 2 minutes) and tries WSS every 5 minutes.
 pub async fn live<F, Fut>(me: &Identity, mut on_msg: F) -> !
 where
     F: FnMut(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     let poll = poll_interval(std::env::var("LETAGENTS_POLL_SECS").ok().as_deref());
+    let mut wait = poll;
+    let mut wss_at = tokio::time::Instant::now();
     loop {
+        if tokio::time::Instant::now() < wss_at {
+            // Polling mode: WSS failed recently.
+            let got = poll_once(me, &mut on_msg).await;
+            wait = next_poll(wait, poll, got);
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+        let started = tokio::time::Instant::now();
         let url = format!("{}/v1/inbox/{}?{}", relay_url().replacen("http", "ws", 1), me.id(), inbox_query(me));
         match tokio::time::timeout(Duration::from_secs(30), connect_ws(&url)).await {
             Ok(Ok(ws)) => {
@@ -318,25 +343,46 @@ where
                     }
                 }
                 eprintln!("inbox: disconnected");
+                // A connection that lived a while reconnects at once (stored mail comes on connect);
+                // one that dropped quickly waits, so a flapping link cannot hammer the relay.
+                tokio::time::sleep(if started.elapsed() > Duration::from_secs(60) { Duration::from_secs(1) } else { poll }).await;
+                continue;
             }
             Ok(Err(e)) => eprintln!("inbox: wss connect failed: {e}"),
             Err(_) => eprintln!("inbox: wss connect timed out"),
         }
-        eprintln!("inbox: polling via https");
-        match fetch(me).await {
-            Ok(messages) => {
-                let mut seqs = Vec::new();
-                for message in messages {
-                    if let Ok(bytes) = message.bytes() {
-                        on_msg(bytes).await;
-                        seqs.push(message.seq);
-                    }
+        eprintln!("inbox: polling via https (wss again in {} s)", WSS_RETRY.as_secs());
+        wss_at = tokio::time::Instant::now() + WSS_RETRY;
+        wait = poll;
+        poll_once(me, &mut on_msg).await;
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// One HTTPS fetch + ack. True when mail came.
+async fn poll_once<F, Fut>(me: &Identity, on_msg: &mut F) -> bool
+where
+    F: FnMut(Vec<u8>) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    match fetch(me).await {
+        Ok(messages) => {
+            let mut seqs = Vec::new();
+            for message in messages {
+                if let Ok(bytes) = message.bytes() {
+                    on_msg(bytes).await;
+                    seqs.push(message.seq);
                 }
-                if let Err(e) = ack(me, &seqs).await { eprintln!("inbox: https ack failed: {e}"); }
             }
-            Err(e) => eprintln!("inbox: https fetch failed: {e}"),
+            if let Err(e) = ack(me, &seqs).await {
+                eprintln!("inbox: https ack failed: {e}");
+            }
+            !seqs.is_empty()
         }
-        tokio::time::sleep(poll).await;
+        Err(e) => {
+            eprintln!("inbox: https fetch failed: {e}");
+            false
+        }
     }
 }
 
@@ -450,6 +496,19 @@ mod tests {
         // Port-qualified entries only match that port.
         assert!(bypass_proxy(&u, "example.com:443"));
         assert!(!bypass_proxy(&u, "example.com:8443"));
+    }
+
+    #[test]
+    fn poll_backs_off_when_empty_and_resets_on_mail() {
+        let base = Duration::from_secs(10);
+        let mut w = base;
+        for want in [20, 40, 80, 120, 120] {
+            w = next_poll(w, base, false);
+            assert_eq!(w, Duration::from_secs(want));
+        }
+        assert_eq!(next_poll(w, base, true), base);
+        // A base above the cap is kept.
+        assert_eq!(next_poll(Duration::from_secs(300), Duration::from_secs(300), false), Duration::from_secs(300));
     }
 
     #[test]

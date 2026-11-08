@@ -128,12 +128,20 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         if env.var("RELAY_MODE").map(|v| v.to_string()).unwrap_or_default() == "closed" {
             return json(503, serde_json::json!({ "error": "relay paused" }));
         }
-        // Per-IP edge limits (Workers rate limiting binding): cheap, and no DO is touched.
+        // Edge limits (Workers rate limiting binding): cheap, and no DO is touched. Cost guard rails:
+        // per IP, per mailbox (inbox logins) and per location (all relay requests). Over a limit: 429.
         let ip = req.headers().get("cf-connecting-ip")?.unwrap_or_else(|| "unknown".into());
-        let limiter = if *op == "send" { "RL_SEND" } else { "RL_INBOX" };
-        if let Ok(rl) = env.rate_limiter(limiter) {
-            if !rl.limit(ip).await?.success {
-                return json(429, serde_json::json!({ "error": "slow down" }));
+        let mut checks = vec![(if *op == "send" { "RL_SEND" } else { "RL_INBOX" }, ip), ("RL_GLOBAL", "all".to_string())];
+        if *op == "inbox" {
+            checks.push(("RL_MAILBOX", id.to_string()));
+        }
+        for (limiter, key) in checks {
+            if let Ok(rl) = env.rate_limiter(limiter) {
+                if !rl.limit(key).await?.success {
+                    let mut r = json(429, serde_json::json!({ "error": "slow down" }))?;
+                    r.headers_mut().set("retry-after", "30")?;
+                    return Ok(r);
+                }
             }
         }
         if *op == "send" {
