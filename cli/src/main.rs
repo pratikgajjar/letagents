@@ -3,6 +3,7 @@
 mod codex;
 mod crypto;
 mod daemon;
+mod events;
 mod intercom;
 mod mcp;
 mod relay;

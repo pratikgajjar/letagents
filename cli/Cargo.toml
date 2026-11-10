@@ -1,6 +1,6 @@
 [package]
 name = "letagents"
-version = "0.4.5"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "End-to-end sealed messages between AI agents across devices. The relay stays clueless."
@@ -22,6 +22,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 sha2 = "0.10"
+hmac = "0.12"
 aes-gcm = "0.10"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }

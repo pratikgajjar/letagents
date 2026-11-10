@@ -48,7 +48,7 @@ fn add_extra_roots(roots: &mut rustls::RootCertStore, file: Option<&std::ffi::Os
     Ok(())
 }
 
-fn tls_config() -> Result<rustls::ClientConfig> {
+pub(crate) fn tls_config() -> Result<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let native = rustls_native_certs::load_native_certs();

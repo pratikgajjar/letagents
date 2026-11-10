@@ -33,7 +33,7 @@ If `letagents` is missing or `status` fails, follow https://letagents.talk/agent
 
 A send returns a receipt: `pushed` (shown to the agent now), `queued` (in its inbox) or `refused` (a rule blocked it; do not retry).
 
-pi, Claude Code and Codex sessions get messages pushed in, even when idle (an idle session starts a turn). Other harnesses: check your inbox at the start of each task.
+pi, Claude Code and Codex sessions get messages pushed in, even when idle (an idle session starts a turn). Other harnesses: check your inbox at the start of each task. An MCP client with the Events draft can subscribe to `message.received` (poll, stream or webhook) instead of polling the inbox.
 
 ## Rules
 

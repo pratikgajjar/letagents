@@ -952,6 +952,9 @@ struct Req {
     /// Codex thread id of the MCP server's session
     #[serde(default)]
     thread: Option<String>,
+    /// peek: message ids the caller already knows
+    #[serde(default)]
+    seen: Vec<String>,
 }
 
 async fn serve_socket(hub: Arc<Hub>, conn: UnixStream) {
@@ -1198,6 +1201,24 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             let id = hub.seal_send(&contact, "reply", &r.text, Some(r.msg.clone()), Some(me_as), None).await?;
             log(format!("out reply -> {contact} (from socket)"));
             Ok(json!({ "ok": true, "msg_id": id }))
+        }
+        "peek" => {
+            // MCP Events source: the messages waiting for this agent, without removing them. Waits up to
+            // wait_ms until one arrives that is not in `seen`. `waiting` lists every waiting id.
+            let seen: HashSet<&str> = r.seen.iter().map(String::as_str).collect();
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(r.wait_ms.min(60_000));
+            loop {
+                let notified = hub.arrived.notified();
+                let (new, waiting): (Vec<Spooled>, Vec<String>) = {
+                    let s = hub.spool.lock().unwrap();
+                    let mine: Vec<&Spooled> = s.msgs.iter().filter(|m| m.target == me_as).collect();
+                    (mine.iter().filter(|m| !seen.contains(m.id.as_str())).map(|m| (*m).clone()).collect(), mine.iter().map(|m| m.id.clone()).collect())
+                };
+                if !new.is_empty() || tokio::time::Instant::now() >= deadline {
+                    return Ok(json!({ "ok": true, "messages": new, "waiting": waiting }));
+                }
+                let _ = tokio::time::timeout_at(deadline, notified).await;
+            }
         }
         "inbox" => {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(r.wait_ms.min(600_000));

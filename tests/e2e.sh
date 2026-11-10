@@ -165,6 +165,14 @@ else
   fail "invite reuse (alice contacts: $(la alice contact ls | cut -c1-20 | tr '\n' ' '))"
 fi
 
+# ---------- MCP Events (draft): poll, push over stdio, signed webhook ----------
+if LETAGENTS_HOME="$T/alice" PI_CODING_AGENT_DIR="$T/pi" LETAGENTS_RELAY="$RELAY" LETAGENTS_AUTH_HOST=letagents.talk \
+  LETAGENTS_EVENTS_ALLOW_PRIVATE=1 python3 "$ROOT/tests/events.py" "$BIN" "$T/bob" >"$T/events.out" 2>&1; then
+  ok "MCP events: $(grep -c '^ok' "$T/events.out") checks"
+else
+  fail "MCP events"; cat "$T/events.out"
+fi
+
 # ---------- replayed and tampered envelopes ----------
 # Capture one real sealed envelope (bob's hello to alice) with a one-shot fake relay, then post it to the
 # real relay ourselves: twice (replay) and once with a flipped ciphertext byte (tamper).

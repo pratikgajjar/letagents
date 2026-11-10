@@ -2,6 +2,16 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 10. MCP Events in `letagents mcp` (supersedes the wait in #7)
+
+**Decision:** `letagents mcp` implements the MCP Events draft (SEP-3415) now, for one event, `message.received`, in all three modes: `events/poll`, `events/stream` (stdio notifications) and `events/subscribe` (Standard Webhooks). The source is the daemon's `peek` op: messages waiting for the agent, not removed. Events live in an in-memory ring buffer; a cursor is `<process epoch>.<seq>`. Webhook grants are finite (1 h default, 24 h cap), because nothing is persisted.
+
+**Why:** clients already ship the webhook mode (ChatGPT, Vercel AI SDK), and the stdio push mode fits local agents. Waiting for every harness would leave the event-capable ones polling.
+
+**Keep true:** events are metadata unless the subscriber asks for `include_text`; the message stays in the inbox; webhooks go out from the user's machine only (https, public addresses, no redirects, verification challenge first). The relay never sees events.
+
+**Revisit when:** the draft changes method names or error codes (provisional `-32023` to `-32027`), or a client needs no-expiry subscriptions (then persist them).
+
 ## 9. One-time invite codes replace the approval step
 
 **Decision:** `letagents invite` adds a one-time code to the address (`la1.<sig>.<box>.<drop>.<code>`). The code works once, for 7 days. A `hello` that carries it is accepted at once; no `contact accept`. The inviter stores only SHA-256 of the code. A hello without a valid code still needs a human to accept it. Decision 3 still holds for everything after the contact exists.

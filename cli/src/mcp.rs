@@ -6,6 +6,9 @@
 //! CLAUDE_CODE_MESSAGING_SOCKET) it watches the daemon and posts each message to that socket, so an idle
 //! session starts a turn. Codex sessions are pushed by the daemon itself (see codex.rs); here we only learn
 //! the thread id from the `_meta` Codex sends with each tool call.
+//!
+//! MCP Events (draft): `events/list`, `events/poll`, `events/stream` and `events/subscribe` for the event
+//! `message.received`, so a client that supports the draft wakes on new mail. See events.rs.
 
 use crate::daemon::{call, socket_path};
 use crate::intercom::{frame, read_frame};
@@ -155,9 +158,22 @@ async fn claude_watch(who: Arc<Mutex<Who>>, sock: String, token: Option<String>)
 
 pub async fn run(fixed: Option<String>) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut out = tokio::io::stdout();
+    // One writer for stdout: responses, and event notifications from background streams.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writer = tokio::spawn(async move {
+        let mut out = tokio::io::stdout();
+        while let Some(line) = out_rx.recv().await {
+            if out.write_all(format!("{line}\n").as_bytes()).await.is_err() || out.flush().await.is_err() {
+                break;
+            }
+        }
+    });
     let (name, harness) = auto_name("mcp");
     let who = Arc::new(Mutex::new(Who { name: fixed.clone().unwrap_or(name), harness, thread: None }));
+    let events = {
+        let w = who.clone();
+        crate::events::Events::new(Arc::new(move || w.lock().unwrap().name.clone()), out_tx.clone())
+    };
     let debug_log = std::env::var("LETAGENTS_MCP_LOG").ok();
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
     let mut registered = false;
@@ -169,8 +185,11 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
             }
         }
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
-        let Some(id) = msg.get("id").cloned() else { continue }; // notifications need no answer
         let params = msg.get("params").cloned().unwrap_or(json!({}));
+        if msg["method"] == json!("notifications/cancelled") {
+            events.cancel(&params["requestId"]);
+        }
+        let Some(id) = msg.get("id").cloned() else { continue }; // notifications need no answer
         let result = match msg["method"].as_str().unwrap_or_default() {
             "initialize" => {
                 let client = params["clientInfo"]["name"].as_str().unwrap_or("mcp");
@@ -219,12 +238,20 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
                 let name_note = if codex_unnamed { String::new() } else { format!(" Your letagents name is {}.", w.name) };
                 Ok(json!({
                     "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
-                    "capabilities": { "tools": {} },
+                    "capabilities": { "tools": {}, "events": crate::events::Events::capability() },
                     "serverInfo": { "name": "letagents", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": format!("{INSTRUCTIONS}{push_note}{name_note}"),
                 }))
             }
             "ping" => Ok(json!({})),
+            "events/list" => Ok(crate::events::Events::list()),
+            "events/poll" => events.poll(&params),
+            "events/subscribe" => events.subscribe(&params).await,
+            "events/unsubscribe" => events.unsubscribe(&params),
+            "events/stream" => match events.stream(id.clone(), &params) {
+                Ok(()) => continue, // long-lived: notifications follow; no response until cancelled
+                Err(e) => Err(e),
+            },
             "tools/list" => Ok(json!({ "tools": tools() })),
             "tools/call" => {
                 // Codex tells us its thread with each call: our name is codex-<thread>.
@@ -259,13 +286,16 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
             Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
             Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
         };
-        out.write_all(format!("{resp}\n").as_bytes()).await?;
-        out.flush().await?;
+        let _ = out_tx.send(resp.to_string());
     }
     // The harness closed stdin: the session ended. Leave the list now.
     for t in tasks.drain(..) {
         t.abort();
     }
+    events.shutdown();
+    drop(events);
+    drop(out_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     if registered {
         let name = who.lock().unwrap().name.clone();
         let _ = call(json!({ "op": "bye", "as": name })).await;

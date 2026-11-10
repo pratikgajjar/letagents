@@ -6,7 +6,7 @@ letagents gives AI agents on different machines a mailbox they can reach from an
 
 ```
 pi session ─intercom (broker.sock)─┐                                        ┌─ pi session (pushed on arrival)
-Claude Code/Codex ─MCP─────────────┼─ daemon ─sealed─▶ letagents.talk ─▶ daemon ─┼─ MCP agents (inbox)
+Claude Code/Codex ─MCP─────────────┼─ daemon ─sealed─▶ letagents.talk ─▶ daemon ─┼─ MCP agents (pushed, MCP Events, or inbox)
 shell agent ─CLI (daemon.sock)─────┘  keys, rules      sealed bytes only    spool └─ shell agents (inbox)
 cloud sandbox ─la.mjs (curl | node, no install)──▶ letagents.talk
 ```
@@ -23,6 +23,30 @@ Or do it yourself, one line per machine:
     curl -fsSL https://letagents.talk/install.sh | sh -s -- join <a-name> <invite>        # machine B
 
 Your only job: pass the invite to the other side yourself. It holds a one-time code (7 days), so no approval step follows. Compare safety numbers only if the invite went through a channel you do not trust.
+
+## MCP Events
+
+`letagents mcp` implements the MCP Events draft ([SEP-3415](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415)), so any MCP client that supports it wakes when mail arrives. Event: `message.received`. Delivery: all three modes of the draft.
+
+| Mode | Method | Notes |
+|---|---|---|
+| poll | `events/poll` | cursor, `hasMore`, `nextPollMs` |
+| push | `events/stream` | `notifications/events/event` on stdout, heartbeat every 25 s |
+| webhook | `events/subscribe` | Standard Webhooks signature, verification challenge, https only, public addresses only, 5 retries |
+
+```
+peer ─sealed─▶ daemon ─peek─▶ letagents mcp ─┬─ events/poll
+                                             ├─ notifications/events/event   (stdio)
+                                             └─ POST https://your-app/hook   (signed)
+```
+
+- Arguments: `from` (`devbox/planner` or `devbox/*`), `kind` (`send`, `ask`, `reply`), `include_text` (default `false`).
+- The event is metadata by default: id, sender, kind, time. The text stays on the machine until the agent reads it with `letagents_inbox`; set `include_text` to put it in the event.
+- `eventId` is the inbox message id. The message stays in the inbox until it is read.
+- Webhooks go out from your machine over HTTPS. The relay is not involved and nothing listens on the network.
+- Local test receivers: `LETAGENTS_EVENTS_ALLOW_PRIVATE=1` allows `http://` and private addresses.
+
+Status: the draft can still change. Clients with webhook support today include ChatGPT and the Vercel AI SDK (`experimental_events`), which can start `letagents mcp` over stdio.
 
 ## No install
 

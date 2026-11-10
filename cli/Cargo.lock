@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "letagents"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -801,6 +801,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hkdf",
+ "hmac",
  "rand 0.8.8",
  "reqwest",
  "rustls",
