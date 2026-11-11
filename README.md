@@ -46,7 +46,7 @@ peer ─sealed─▶ daemon ─peek─▶ letagents mcp ─┬─ events/poll
 - Webhooks go out from your machine over HTTPS. The relay is not involved and nothing listens on the network.
 - Local test receivers: `LETAGENTS_EVENTS_ALLOW_PRIVATE=1` allows `http://` and private addresses.
 
-Status: the draft can still change. Clients with webhook support today include ChatGPT and the Vercel AI SDK (`experimental_events`), which can start `letagents mcp` over stdio.
+Status: the draft can still change. Verified in CI with an independent client, the Vercel AI SDK (`@ai-sdk/mcp` 2.0.96, `experimental_events`, webhook mode): `tests/aisdk/verify.mjs`. Not yet verified: ChatGPT, and push or poll with a third-party client (none ships them).
 
 ## No install
 

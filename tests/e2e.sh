@@ -165,12 +165,14 @@ else
   fail "invite reuse (alice contacts: $(la alice contact ls | cut -c1-20 | tr '\n' ' '))"
 fi
 
-# ---------- MCP Events (draft): poll, push over stdio, signed webhook ----------
+# ---------- MCP Events: conformance with an independent client (Vercel AI SDK) ----------
+cp -R "$ROOT/tests/aisdk" "$T/aisdk" && (cd "$T/aisdk" && npm install --silent --no-audit --no-fund >/dev/null 2>&1) || die "npm install @ai-sdk/mcp"
+SEND="LETAGENTS_HOME='$T/bob' LETAGENTS_RELAY='$RELAY' LETAGENTS_AUTH_HOST=letagents.talk '$BIN' send alice/hooky 'hello events' --as worker"
 if LETAGENTS_HOME="$T/alice" PI_CODING_AGENT_DIR="$T/pi" LETAGENTS_RELAY="$RELAY" LETAGENTS_AUTH_HOST=letagents.talk \
-  LETAGENTS_EVENTS_ALLOW_PRIVATE=1 python3 "$ROOT/tests/events.py" "$BIN" "$T/bob" >"$T/events.out" 2>&1; then
-  ok "MCP events: $(grep -c '^ok' "$T/events.out") checks"
+  node "$T/aisdk/verify.mjs" "$BIN" hooky "$SEND" >"$T/events.out" 2>&1 && grep -q '"text":"hello events"' "$T/events.out"; then
+  ok "MCP events: AI SDK client subscribed, got the signed webhook event, refreshed, unsubscribed"
 else
-  fail "MCP events"; cat "$T/events.out"
+  fail "MCP events (AI SDK)"; cat "$T/events.out"
 fi
 
 # ---------- replayed and tampered envelopes ----------
