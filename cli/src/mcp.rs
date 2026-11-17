@@ -7,8 +7,12 @@
 //! session starts a turn. Codex sessions are pushed by the daemon itself (see codex.rs); here we only learn
 //! the thread id from the `_meta` Codex sends with each tool call.
 //!
-//! MCP Events (draft): `events/list`, `events/poll`, `events/stream` and `events/subscribe` for the event
-//! `message.received`, so a client that supports the draft wakes on new mail. See events.rs.
+//! MCP Events (the `io.modelcontextprotocol/events` extension, accepted SEP-3415): `events/list`, `events/poll`,
+//! `events/stream`, `events/subscribe` and `events/unsubscribe` for the event `message.received`, so a client
+//! that supports Events wakes on new mail. See events.rs.
+//!
+//! Protocol revisions: the `initialize` handshake (2025-x clients) and the stateless 2026-07-28 lifecycle
+//! (`server/discover`, per-request `_meta`, `resultType` on every result, `subscriptions/listen`).
 
 use crate::daemon::{call, socket_path};
 use crate::intercom::{frame, read_frame};
@@ -54,6 +58,16 @@ fn auto_name(client: &str) -> (String, String) {
     // No session id from the harness: use our own pid, which is unique per MCP server process.
     // (Codex renames us to codex-<thread> at the first tool call.)
     (format!("{short}-{}", std::process::id()), harness)
+}
+
+/// The protocol revisions this server speaks, newest first.
+const VERSIONS: [&str; 4] = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
+
+fn capabilities() -> Value {
+    let ev = crate::events::Events::capability();
+    // The accepted key is `extensions["io.modelcontextprotocol/events"]`. The top-level `events` key is the
+    // design sketch's, kept because @ai-sdk/mcp (<= 2.0.99) reads only it. See docs/DECISIONS.md #10.
+    json!({ "tools": {}, "extensions": { crate::events::EXTENSION: ev }, "events": ev })
 }
 
 fn tools() -> Value {
@@ -186,6 +200,10 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
         }
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         let params = msg.get("params").cloned().unwrap_or(json!({}));
+        // Who the client is: initialize's clientInfo, or the per-request _meta of the 2026-07-28 lifecycle.
+        if let Some(c) = params["clientInfo"]["name"].as_str().or(params["_meta"]["io.modelcontextprotocol/clientInfo"]["name"].as_str()) {
+            events.set_client(c);
+        }
         if msg["method"] == json!("notifications/cancelled") {
             events.cancel(&params["requestId"]);
         }
@@ -238,13 +256,41 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
                 let name_note = if codex_unnamed { String::new() } else { format!(" Your letagents name is {}.", w.name) };
                 Ok(json!({
                     "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
-                    "capabilities": { "tools": {}, "events": crate::events::Events::capability() },
+                    "capabilities": capabilities(),
                     "serverInfo": { "name": "letagents", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": format!("{INSTRUCTIONS}{push_note}{name_note}"),
                 }))
             }
+            "server/discover" => {
+                // The stateless lifecycle has no initialize: register on the first discover instead.
+                if !registered {
+                    let w = who.lock().unwrap().clone();
+                    hello(&w).await;
+                    registered = true;
+                    let hb = who.clone();
+                    tasks.push(tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            let w = hb.lock().unwrap().clone();
+                            hello(&w).await;
+                        }
+                    }));
+                }
+                Ok(json!({
+                    "supportedVersions": VERSIONS,
+                    "capabilities": capabilities(),
+                    "instructions": format!("{INSTRUCTIONS} Check letagents_inbox at the start of each task."),
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "_meta": { "io.modelcontextprotocol/serverInfo": { "name": "letagents", "version": env!("CARGO_PKG_VERSION") } },
+                }))
+            }
             "ping" => Ok(json!({})),
-            "events/list" => Ok(crate::events::Events::list()),
+            "subscriptions/listen" => {
+                events.listen(id.clone(), &params);
+                continue; // long-lived: the acknowledgement and notifications follow; no response until cancelled
+            }
+            "events/list" => events.list(&params),
             "events/poll" => events.poll(&params),
             "events/subscribe" => events.subscribe(&params).await,
             "events/unsubscribe" => events.unsubscribe(&params),
@@ -252,7 +298,11 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
                 Ok(()) => continue, // long-lived: notifications follow; no response until cancelled
                 Err(e) => Err(e),
             },
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/list" => {
+                let mut t = tools().as_array().cloned().unwrap_or_default();
+                t.extend(events.control_tools());
+                Ok(json!({ "tools": t, "ttlMs": 0, "cacheScope": "private" }))
+            }
             "tools/call" => {
                 // Codex tells us its thread with each call: our name is codex-<thread>.
                 if let Some(t) = params["_meta"]["threadId"].as_str().filter(|_| fixed.is_none()) {
@@ -275,15 +325,29 @@ pub async fn run(fixed: Option<String>) -> Result<()> {
                 let name = params["name"].as_str().unwrap_or_default();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let w = who.lock().unwrap().clone();
+                if let Some(r) = events.control(name, &args).await {
+                    let (text, is_error) = match r {
+                        Ok(t) => (t, false),
+                        Err(t) => (t, true),
+                    };
+                    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+                } else {
                 Ok(match call_tool(&w.name, &w.harness, name, &args).await {
                     Ok(v) => json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v)? }] }),
                     Err(e) => json!({ "content": [{ "type": "text", "text": e.to_string() }], "isError": true }),
                 })
+                }
             }
             m => Err(json!({ "code": -32601, "message": format!("method not found: {m}") })),
         };
         let resp = match result {
-            Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
+            Ok(mut r) => {
+                // 2026-07-28: every result says what it is. Older clients ignore the field.
+                if let Some(o) = r.as_object_mut() {
+                    o.entry("resultType").or_insert(json!("complete"));
+                }
+                json!({ "jsonrpc": "2.0", "id": id, "result": r })
+            }
             Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
         };
         let _ = out_tx.send(resp.to_string());

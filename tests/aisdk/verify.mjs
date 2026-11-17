@@ -1,4 +1,6 @@
-// Conformance check: `letagents mcp` MCP Events, driven by an independent client, the Vercel AI SDK (@ai-sdk/mcp).
+// `letagents mcp` MCP Events, driven by an independent client, the Vercel AI SDK (@ai-sdk/mcp). @ai-sdk/mcp <= 2.0.99
+// predates accepted SEP-3415, so this checks the server's AI SDK compatibility mode (docs/DECISIONS.md #10); the
+// official conformance suite in tests/e2e.sh checks the accepted behaviour.
 // Webhook mode end to end: events/list, events/subscribe (verification challenge, Standard Webhooks signature checked
 // by the SDK's createMCPEventWebhook), one real message, refresh, unsubscribe. Exits 1 on any failure.
 //

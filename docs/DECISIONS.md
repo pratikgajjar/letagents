@@ -4,13 +4,21 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 
 ## 10. MCP Events in `letagents mcp` (supersedes the wait in #7)
 
-**Decision:** `letagents mcp` implements the MCP Events draft (SEP-3415) now, for one event, `message.received`, in all three modes: `events/poll`, `events/stream` (stdio notifications) and `events/subscribe` (Standard Webhooks). The source is the daemon's `peek` op: messages waiting for the agent, not removed. Events live in an in-memory ring buffer; a cursor is `<process epoch>.<seq>`. Webhook grants are finite (1 h default, 24 h cap), because nothing is persisted.
+**Decision:** `letagents mcp` implements MCP Events per accepted SEP-3415 (commit 4165cc2), for one event, `message.received`, in all three modes: `events/poll`, `events/stream` (stdio notifications) and `events/subscribe` (Standard Webhooks). The source is the daemon's `peek` op: messages waiting for the agent, not removed. Events live in an in-memory ring buffer; a cursor is `<process epoch>.<seq>`. Webhook grants are finite (1 h default and cap, `ttlMs: null` too), because nothing is persisted. Stdio only, so the Streamable HTTP `Mcp-Name` rules do not apply.
+
+**Verified:** conformance#521 passes: discovery, poll, push, webhook, webhook-delivery: 122 checks passed (15, 31, 26, 25, 25), 0 failed (pinned `76fef32`, in `tests/e2e.sh`). The two `Mcp-Name` rows are counted as not applicable. The suite runs over a test-only HTTP-to-stdio bridge, with `LETAGENTS_EVENTS_CONFORMANCE=1` (test controls and fixture event types, off by default).
+
+**Deviations, for reach:** more people can use letagents if clients written before the accepted SEP work too.
+1. The top-level `capabilities.events` key is sent next to `capabilities.extensions["io.modelcontextprotocol/events"]`.
+2. For a client whose `clientInfo.name` is `ai-sdk-mcp-client`, an event delivery's `webhook-id` is its `eventId` (the SEP says MUST NOT). Every other client, and every control envelope, gets a random `webhook-id`.
+
+@ai-sdk/mcp ≤2.0.99 reads the old key and ties webhook-id to eventId; re-add its check when it follows the accepted SEP. Until then `tests/aisdk` checks this compatibility mode. **Remove both deviations** when an @ai-sdk/mcp release reads the `extensions` key and accepts a separate `webhook-id`.
 
 **Why:** clients already ship the webhook mode (ChatGPT, Vercel AI SDK), and the stdio push mode fits local agents. Waiting for every harness would leave the event-capable ones polling.
 
 **Keep true:** events are metadata unless the subscriber asks for `include_text`; the message stays in the inbox; webhooks go out from the user's machine only (https, public addresses, no redirects, verification challenge first). The relay never sees events.
 
-**Revisit when:** the draft changes method names or error codes (provisional `-32023` to `-32027`), or a client needs no-expiry subscriptions (then persist them).
+**Revisit when:** the extension's error codes (`-32023` to `-32027`) or methods change, a client needs no-expiry or long subscriptions (then persist them), or @ai-sdk/mcp follows the accepted SEP (then remove the deviations).
 
 ## 9. One-time invite codes replace the approval step
 

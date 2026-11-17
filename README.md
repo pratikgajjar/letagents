@@ -26,13 +26,16 @@ Your only job: pass the invite to the other side yourself. It holds a one-time c
 
 ## MCP Events
 
-`letagents mcp` implements the MCP Events draft ([SEP-3415](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415)), so any MCP client that supports it wakes when mail arrives. Event: `message.received`. Delivery: all three modes of the draft.
+`letagents mcp` implements MCP Events, the `io.modelcontextprotocol/events` extension: accepted [SEP-3415](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415) (commit 4165cc2). Any MCP client that supports it wakes when mail arrives. Event: `message.received`. Delivery: all three modes. Transport: stdio.
+
+- Capability: `capabilities.extensions["io.modelcontextprotocol/events"]` = `{"listChanged": true}`, from `initialize` and from `server/discover` (protocol 2026-07-28). Every result carries `resultType: "complete"`.
+- `notifications/events/list_changed` goes to `subscriptions/listen` streams opened with `eventsListChanged: true`.
 
 | Mode | Method | Notes |
 |---|---|---|
 | poll | `events/poll` | cursor, `hasMore`, `nextPollMs` |
-| push | `events/stream` | `notifications/events/event` on stdout, heartbeat every 25 s |
-| webhook | `events/subscribe` | Standard Webhooks signature, verification challenge, https only, public addresses only, 5 retries |
+| push | `events/stream` | `notifications/events/*` on stdout; `heartbeatMs` suggested by the client, granted on every `notifications/events/active` (default 30 s, at most 10 min); cancel with `notifications/cancelled` |
+| webhook | `events/subscribe` | Standard Webhooks signature, verification challenge, https only, public addresses only, a random `webhook-id` per message reused by its retries, 5 attempts per event, `gap` and `terminated` envelopes, TTL grants up to 1 h |
 
 ```
 peer ─sealed─▶ daemon ─peek─▶ letagents mcp ─┬─ events/poll
@@ -46,7 +49,12 @@ peer ─sealed─▶ daemon ─peek─▶ letagents mcp ─┬─ events/poll
 - Webhooks go out from your machine over HTTPS. The relay is not involved and nothing listens on the network.
 - Local test receivers: `LETAGENTS_EVENTS_ALLOW_PRIVATE=1` allows `http://` and private addresses.
 
-Status: the draft can still change. Verified in CI with an independent client, the Vercel AI SDK (`@ai-sdk/mcp` 2.0.96, `experimental_events`, webhook mode): `tests/aisdk/verify.mjs`. Not yet verified: ChatGPT, and push or poll with a third-party client (none ships them).
+Verified in CI (`tests/e2e.sh`):
+
+- The official conformance suite: conformance#521 passes (discovery, poll, push, webhook, webhook-delivery: 122 checks passed (15, 31, 26, 25, 25), 0 failed). Pinned at commit `76fef32`. The runner speaks Streamable HTTP, so `tests/conformance/bridge.mjs` maps it to stdio. The two `Mcp-Name` rows are HTTP-only rules and count as not applicable. `LETAGENTS_EVENTS_CONFORMANCE=1` adds the suite's test controls and fixture event types; without it the server lists only `message.received`.
+- An independent client: the Vercel AI SDK (`@ai-sdk/mcp` 2.0.99, webhook mode), `tests/aisdk/verify.mjs`.
+
+Two deviations, for clients that predate the accepted SEP (see docs/DECISIONS.md #10): the top-level `capabilities.events` key is also sent, and for a client named `ai-sdk-mcp-client` only, an event's `webhook-id` is its `eventId`.
 
 ## No install
 

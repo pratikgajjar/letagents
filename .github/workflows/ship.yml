@@ -31,7 +31,7 @@ jobs:
         run: python3 web/src/build.py && git diff --exit-code web/index.html
       - run: cargo install -q worker-build@^0.8
       - name: end-to-end (local relay, two daemons)
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: tests/e2e.sh
       - name: zero-install client (web/la.mjs) against the daemon
         timeout-minutes: 8
