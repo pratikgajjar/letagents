@@ -364,7 +364,7 @@ mkdir -m 755 "$T/eve" && touch "$T/eve/daemon.log" && chmod 644 "$T/eve/daemon.l
 la eve init eve >/dev/null
 start_daemon eve
 wait_for 20 test -S "$T/eve/daemon.sock"
-mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; } # GNU, then BSD (on Linux, -f is file-system stat)
 check "D1 a home made 0755 beforehand is closed to 0700 ($(mode "$T/eve"))" test "$(mode "$T/eve")" = 700
 check "D1 daemon.log made 0644 beforehand is 0600 ($(mode "$T/eve/daemon.log"))" test "$(mode "$T/eve/daemon.log")" = 600
 bad=""
