@@ -33,7 +33,12 @@ if [ "${1:-}" = --prod ]; then
   check "prod page: HSTS" grep -q '^strict-transport-security: max-age=' <<<"$H"
   check "prod page: CSP default-src 'none', frame-ancestors 'none'" bash -c "grep -q \"^content-security-policy: default-src 'none'.*frame-ancestors 'none'\" <<<\"\$0\"" "$H"
   check "prod page: nosniff, no-referrer" bash -c 'grep -q "^x-content-type-options: nosniff" <<<"$0" && grep -q "^referrer-policy: no-referrer" <<<"$0"' "$H"
-  code=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://letagents.talk/install.sh)
+  # Right after a deploy, an old worker can still answer for a few seconds: retry for up to a minute.
+  for _ in 1 2 3 4 5 6; do
+    code=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://letagents.talk/install.sh)
+    [ "$code" = "301 https://letagents.talk/install.sh" ] && break
+    sleep 10
+  done
   check "prod http://install.sh redirects to https ($code)" test "$code" = "301 https://letagents.talk/install.sh"
   code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://letagents.talk/v1/send/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)
   check "prod http API refused ($code)" test "$code" = 403
