@@ -9,6 +9,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
+use std::sync::OnceLock;
 use worker::*;
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
@@ -59,12 +60,19 @@ fn json(status: u16, body: serde_json::Value) -> Result<Response> {
 }
 
 fn page(body: &str, content_type: &str) -> Result<Response> {
+    page_with_script(body, content_type, "")
+}
+
+/// `script` is a CSP source for the one inline script allowed on the page ('sha256-...'), or empty. That
+/// script may also read same-origin URLs (/stats.json).
+fn page_with_script(body: &str, content_type: &str, script: &str) -> Result<Response> {
     let mut r = Response::ok(body)?;
     let h = r.headers_mut();
     h.set("content-type", content_type)?;
+    let script = if script.is_empty() { String::new() } else { format!(" script-src {script}; connect-src 'self';") };
     h.set(
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        &format!("default-src 'none'; style-src 'unsafe-inline';{script} img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
     )?;
     h.set("referrer-policy", "no-referrer")?;
     h.set("x-content-type-options", "nosniff")?;
@@ -95,7 +103,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let method = if req.method() == Method::Head { Method::Get } else { req.method() };
     match (method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
-            let mut r = if wants_markdown(&req) { page(AGENTS_MD, "text/markdown; charset=utf-8")? } else { page(&with_stats(&stats(&env).await), "text/html; charset=utf-8")? };
+            let mut r = if wants_markdown(&req) {
+                page(AGENTS_MD, "text/markdown; charset=utf-8")?
+            } else {
+                page_with_script(&with_stats(&stats(&env, &url).await), "text/html; charset=utf-8", chart_script_hash())?
+            };
             r.headers_mut().set("vary", "Accept, User-Agent")?;
             r.headers_mut().set("link", r#"</agents.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="alternate"; type="text/plain""#)?;
             return Ok(r);
@@ -111,7 +123,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
         (Method::Get, "/la.mjs") => return page(LA_MJS, "text/javascript; charset=utf-8"),
         (Method::Get, "/stats.json") => {
-            let mut r = json(200, stats(&env).await)?;
+            let mut r = json(200, stats(&env, &url).await)?;
             r.headers_mut().set("cache-control", "public, max-age=60")?;
             r.headers_mut().set("access-control-allow-origin", "*")?;
             return Ok(r);
@@ -252,7 +264,7 @@ impl Mailbox {
             let _ = ws.send_with_str(&frame);
         }
         self.schedule_cleanup().await?;
-        bump_stat(&self.env, "sent=1").await;
+        self.report(vec!["sent=1".into()]).await?;
         json(202, serde_json::json!({ "ok": true, "seq": seq.seq }))
     }
 
@@ -289,7 +301,7 @@ impl Mailbox {
         self.set_meta("drop_hash", &drop_hash)?;
         self.set_meta("last_seen", &now_ms().to_string())?;
         self.schedule_cleanup().await?;
-        self.count_active().await?;
+        let counted = self.first_login()?;
         // Keepalive pings are answered by the runtime itself: the object stays hibernated (not billed).
         if let Ok(pair) = worker::worker_sys::WebSocketRequestResponsePair::new(r#"{"t":"ping"}"#, r#"{"t":"pong"}"#) {
             self.state.set_websocket_auto_response(&pair);
@@ -302,10 +314,12 @@ impl Mailbox {
                     msgs.push(serde_json::json!({ "seq": seq, "ct": B64.encode(ct) }));
                 }
             }
+            self.report(counted).await?;
             return json(200, serde_json::json!({ "msgs": msgs }));
         }
         let pair = WebSocketPair::new()?;
         self.state.accept_websocket_with_tags(&pair.server, &["owner"]);
+        self.report(counted).await?;
         for row in self.sql().exec("SELECT seq, ct FROM msgs ORDER BY seq", None)?.raw() {
             if let [SqlStorageValue::Integer(seq), SqlStorageValue::Blob(ct)] = row?.as_slice() {
                 pair.server.send_with_str(serde_json::json!({ "t": "msg", "seq": seq, "ct": B64.encode(ct) }).to_string())?;
@@ -390,14 +404,15 @@ impl DurableObject for Mailbox {
         self.set_meta("last_seen", &now_ms().to_string())?;
         let code = if code == 1005 || code == 1006 { 1000 } else { code as u16 };
         let _ = ws.close(Some(code), Some("bye"));
-        Ok(())
+        self.report(vec![]).await
     }
 
     async fn websocket_error(&self, _ws: WebSocket, _error: Error) -> Result<()> {
-        Ok(())
+        self.report(vec![]).await
     }
 
     async fn alarm(&self) -> Result<Response> {
+        self.report(vec![]).await?;
         let now = now_ms();
         self.sql().exec("DELETE FROM msgs WHERE ts < ?", vec![(now - TTL_MS).into()])?;
         let left: Count = self.sql().exec("SELECT COUNT(*) AS n FROM msgs", None)?.one()?;
@@ -435,24 +450,55 @@ impl Mailbox {
     }
 }
 
+// ---------- public usage counters ----------
+//
+// Public: machines online now, sealed messages relayed per hour, and peak machines online per hour (30 days).
+// "Machine" = a mailbox with an open WebSocket. Agents are not counted: their names are inside the envelopes.
+//
+// Live gauge, self-healing and without timers: a mailbox that is online is counted in the Stats row of the
+// hour it last confirmed it (`live_h` in its own meta). It confirms on its own events only (login, message,
+// close, alarm), and moves itself to the current hour at most once per hour. Stats sums the rows of the last
+// LIVE_LEASE_H hours, so a mailbox whose close event was lost drops out after at most that long. Hibernation
+// is untouched: keepalive pings never reach the object.
+
+const LIVE_LEASE_H: i64 = 24;
+const KEEP_HOURS: i64 = 720; // 30 days of hourly rows in the Stats object
+
+fn hour_now() -> i64 {
+    now_ms() / 3_600_000
+}
+
 impl Mailbox {
-    /// Public counters: this mailbox is active today / this week / for the first time. The mailbox keeps
-    /// only the day and week it last counted itself; the stats object gets increments, never an id.
-    async fn count_active(&self) -> Result<()> {
-        let day = now_ms() / 86_400_000;
-        let week = (day + 3) / 7; // weeks start on Monday (1970-01-01 was a Thursday)
-        let mut q = vec![];
-        if self.meta("stat_day")?.as_deref() != Some(&day.to_string()) {
-            self.set_meta("stat_day", &day.to_string())?;
-            q.push("day=1");
+    fn online(&self) -> bool {
+        // 1 = OPEN: a socket that is closing still shows up while its close event runs.
+        self.state.get_websockets_with_tag("owner").iter().any(|ws| ws.as_ref().ready_state() == 1)
+    }
+
+    /// `new=1` the first time this mailbox logs in (machines_total). Also drops the day/week markers of v0.5.0.
+    fn first_login(&self) -> Result<Vec<String>> {
+        self.sql().exec("DELETE FROM meta WHERE k IN ('stat_day', 'stat_week')", None)?;
+        if self.meta("counted")?.is_some() {
+            return Ok(vec![]);
         }
-        if self.meta("stat_week")?.as_deref() != Some(&week.to_string()) {
-            self.set_meta("stat_week", &week.to_string())?;
-            q.push("week=1");
-        }
-        if self.meta("counted")?.is_none() {
-            self.set_meta("counted", "1")?;
-            q.push("new=1");
+        self.set_meta("counted", "1")?;
+        Ok(vec!["new=1".into()])
+    }
+
+    /// One call to the Stats object with `q` plus this mailbox's live state, only if there is something to say.
+    /// Stats gets increments and hour numbers, never an id.
+    async fn report(&self, mut q: Vec<String>) -> Result<()> {
+        let h = hour_now();
+        let cur: Option<i64> = self.meta("live_h")?.and_then(|v| v.parse().ok());
+        let counted = cur.filter(|c| *c >= h - LIVE_LEASE_H);
+        if self.online() {
+            if !cur.is_some_and(|c| c >= h) {
+                q.push("on=1".into());
+                q.extend(counted.map(|c| format!("off={c}")));
+                self.set_meta("live_h", &h.to_string())?;
+            }
+        } else if cur.is_some() {
+            q.extend(counted.map(|c| format!("off={c}")));
+            self.sql().exec("DELETE FROM meta WHERE k = 'live_h'", None)?;
         }
         if !q.is_empty() {
             bump_stat(&self.env, &q.join("&")).await;
@@ -460,8 +506,6 @@ impl Mailbox {
         Ok(())
     }
 }
-
-// ---------- public usage counters ----------
 
 fn stats_stub(env: &Env) -> Result<Stub> {
     env.durable_object("STATS")?.id_from_name("global")?.get_stub()
@@ -474,12 +518,26 @@ async fn bump_stat(env: &Env, query: &str) {
     }
 }
 
-async fn stats(env: &Env) -> serde_json::Value {
+/// The public counters, from the edge cache when it has them (60 s), so page views rarely wake the Stats object.
+async fn stats(env: &Env, url: &Url) -> serde_json::Value {
+    let key = format!("{}/stats.json", url.origin().ascii_serialization());
+    let cache = Cache::default();
+    if let Ok(Some(mut r)) = cache.get(key.as_str(), false).await {
+        if let Ok(v) = r.json::<serde_json::Value>().await {
+            return v;
+        }
+    }
     let got = async {
         let mut r = stats_stub(env)?.fetch_with_str("https://stats/get").await?;
         r.json::<serde_json::Value>().await
     };
-    got.await.unwrap_or_else(|_| serde_json::json!({}))
+    let Ok(v) = got.await else { return serde_json::json!({}) };
+    if let Ok(mut r) = Response::from_json(&v) {
+        if r.headers_mut().set("cache-control", "public, max-age=60").is_ok() {
+            let _ = cache.put(key.as_str(), r).await;
+        }
+    }
+    v
 }
 
 fn fmt_n(n: i64) -> String {
@@ -494,15 +552,31 @@ fn fmt_n(n: i64) -> String {
     out
 }
 
-/// The page with live counters filled in.
+/// CSP source for the chart script on the home page: the SHA-256 of the one plain `<script>` element.
+fn chart_script_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        let Some((_, rest)) = INDEX_HTML.split_once("<script>") else { return String::new() };
+        let Some((js, _)) = rest.split_once("</script>") else { return String::new() };
+        format!("'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(js.as_bytes())))
+    })
+}
+
+/// The page with the counters filled in (readable with scripts off) and the series for the chart.
 fn with_stats(s: &serde_json::Value) -> String {
     let n = |k: &str| s[k].as_i64().map(fmt_n).unwrap_or_else(|| "-".into());
+    let last24 = |k: &str| s[k].as_array().map(|a| a.iter().rev().take(24).filter_map(|v| v.as_i64()).collect::<Vec<_>>());
+    let msgs_24h = last24("messages").map(|v| fmt_n(v.iter().sum())).unwrap_or_else(|| "-".into());
+    let peak_24h = last24("peak_online").map(|v| fmt_n(v.into_iter().max().unwrap_or(0))).unwrap_or_else(|| "-".into());
+    let data = serde_json::to_string(s).unwrap_or_else(|_| "{}".into()).replace("</", "<\\/");
     INDEX_HTML
-        .replace("__MACHINES_WEEK__", &n("machines_week"))
-        .replace("__MACHINES_TOTAL__", &n("machines_total"))
-        .replace("__MSGS_TODAY__", &n("messages_today"))
+        .replace("__ONLINE__", &n("machines_online"))
+        .replace("__MSGS_24H__", &msgs_24h)
+        .replace("__PEAK_24H__", &peak_24h)
         .replace("__MSGS_TOTAL__", &n("messages_total"))
+        .replace("__MACHINES_TOTAL__", &n("machines_total"))
         .replace("__STATS_SINCE__", s["since"].as_str().unwrap_or("-"))
+        .replace("__STATS_JSON__", &data)
 }
 
 #[derive(Deserialize)]
@@ -510,8 +584,21 @@ struct Num {
     n: Option<i64>,
 }
 
-/// One object for the whole relay: per-day and per-week counts and totals. No ids, no IPs. Days older
-/// than 30 and weeks older than 8 are deleted.
+fn iso_day(d: i64) -> String {
+    let z = d + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let dd = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{m:02}-{dd:02}", yoe + era * 400 + if m <= 2 { 1 } else { 0 })
+}
+
+/// One object for the whole relay. Tables: `hour` (messages and peak machines online per hour, at most
+/// KEEP_HOURS rows), `live` (online mailboxes by the hour they last confirmed it, at most LIVE_LEASE_H + 1
+/// rows) and `total` (since, machines, sent). No ids, no IPs.
 #[durable_object]
 pub struct Stats {
     state: State,
@@ -521,13 +608,19 @@ impl Stats {
     fn get(&self, sql: &str, args: Vec<SqlStorageValue>) -> i64 {
         self.state.storage().sql().exec(sql, Some(args)).and_then(|c| c.one::<Num>()).ok().and_then(|r| r.n).unwrap_or(0)
     }
+
+    fn online(&self, h: i64) -> i64 {
+        self.get("SELECT SUM(n) AS n FROM live WHERE h >= ?", vec![(h - LIVE_LEASE_H).into()])
+    }
 }
 
 impl DurableObject for Stats {
     fn new(state: State, _env: Env) -> Self {
         let sql = state.storage().sql();
-        let _ = sql.exec("CREATE TABLE IF NOT EXISTS day (d INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0)", None);
-        let _ = sql.exec("CREATE TABLE IF NOT EXISTS week (w INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0)", None);
+        let _ = sql.exec("DROP TABLE IF EXISTS day", None);
+        let _ = sql.exec("DROP TABLE IF EXISTS week", None);
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS hour (h INTEGER PRIMARY KEY, sent INTEGER NOT NULL DEFAULT 0, peak INTEGER NOT NULL DEFAULT 0)", None);
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS live (h INTEGER PRIMARY KEY, n INTEGER NOT NULL)", None);
         let _ = sql.exec("CREATE TABLE IF NOT EXISTS total (k TEXT PRIMARY KEY, v INTEGER NOT NULL)", None);
         Self { state }
     }
@@ -535,59 +628,69 @@ impl DurableObject for Stats {
     async fn fetch(&self, req: Request) -> Result<Response> {
         let url = req.url()?;
         let sql = self.state.storage().sql();
-        let day = now_ms() / 86_400_000;
-        let week = (day + 3) / 7;
+        let h = hour_now();
         if url.path() == "/inc" {
-            let has = |k: &str| url.query_pairs().any(|(n, _)| n == k);
+            let arg = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
             let bump = |k: &str| sql.exec("INSERT INTO total (k, v) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET v = v + 1", vec![k.into()]);
             if sql.exec("SELECT v AS n FROM total WHERE k = 'since'", None)?.to_array::<Num>()?.is_empty() {
-                sql.exec("INSERT INTO total (k, v) VALUES ('since', ?)", vec![day.into()])?;
+                sql.exec("INSERT INTO total (k, v) VALUES ('since', ?)", vec![(h / 24).into()])?;
             }
-            if has("sent") {
-                sql.exec("INSERT INTO day (d, sent) VALUES (?, 1) ON CONFLICT(d) DO UPDATE SET sent = sent + 1", vec![day.into()])?;
+            let before = self.online(h);
+            if let Some(off) = arg("off").and_then(|v| v.parse::<i64>().ok()).filter(|o| *o >= h - LIVE_LEASE_H) {
+                sql.exec("UPDATE live SET n = MAX(n - 1, 0) WHERE h = ?", vec![off.into()])?;
+            }
+            if arg("on").is_some() {
+                sql.exec("INSERT INTO live (h, n) VALUES (?, 1) ON CONFLICT(h) DO UPDATE SET n = n + 1", vec![h.into()])?;
+            }
+            let after = self.online(h);
+            // Hours with no event at all: the gauge did not change, so they get the value it had.
+            let last = self.get("SELECT MAX(h) AS n FROM hour", vec![]);
+            if last > 0 {
+                for gap in (last + 1).max(h - KEEP_HOURS + 1)..h {
+                    sql.exec("INSERT OR IGNORE INTO hour (h, peak) VALUES (?, ?)", vec![gap.into(), before.into()])?;
+                }
+            }
+            let sent = i64::from(arg("sent").is_some());
+            sql.exec(
+                "INSERT INTO hour (h, sent, peak) VALUES (?, ?, ?) ON CONFLICT(h) DO UPDATE SET sent = sent + excluded.sent, peak = MAX(peak, excluded.peak)",
+                vec![h.into(), sent.into(), before.max(after).into()],
+            )?;
+            if sent == 1 {
                 bump("sent")?;
             }
-            if has("day") {
-                sql.exec("INSERT INTO day (d, active) VALUES (?, 1) ON CONFLICT(d) DO UPDATE SET active = active + 1", vec![day.into()])?;
-            }
-            if has("week") {
-                sql.exec("INSERT INTO week (w, active) VALUES (?, 1) ON CONFLICT(w) DO UPDATE SET active = active + 1", vec![week.into()])?;
-            }
-            if has("new") {
+            if arg("new").is_some() {
                 bump("machines")?;
             }
-            sql.exec("DELETE FROM day WHERE d < ?", vec![(day - 30).into()])?;
-            sql.exec("DELETE FROM week WHERE w < ?", vec![(week - 8).into()])?;
+            sql.exec("DELETE FROM hour WHERE h <= ?", vec![(h - KEEP_HOURS).into()])?;
+            sql.exec("DELETE FROM live WHERE h < ? OR n = 0", vec![(h - LIVE_LEASE_H).into()])?;
             return Response::ok("");
         }
-        let since = self.get("SELECT v AS n FROM total WHERE k = 'since'", vec![]);
-        let iso_day = |d: i64| {
-            let (z, era);
-            z = d + 719_468;
-            era = z.div_euclid(146_097);
-            let doe = z.rem_euclid(146_097);
-            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-            let mp = (5 * doy + 2) / 153;
-            let dd = doy - (153 * mp + 2) / 5 + 1;
-            let m = if mp < 10 { mp + 3 } else { mp - 9 };
-            format!("{:04}-{m:02}-{dd:02}", yoe + era * 400 + if m <= 2 { 1 } else { 0 })
-        };
-        let mut daily = vec![];
-        for row in sql.exec("SELECT d, active, sent FROM day ORDER BY d DESC LIMIT 30", None)?.raw() {
-            if let [SqlStorageValue::Integer(d), SqlStorageValue::Integer(a), SqlStorageValue::Integer(s)] = row?.as_slice() {
-                daily.push(serde_json::json!({ "date": iso_day(*d), "machines": a, "messages": s }));
+        let online = self.online(h);
+        let mut rows = std::collections::BTreeMap::new();
+        for row in sql.exec("SELECT h, sent, peak FROM hour WHERE h > ? ORDER BY h", vec![(h - KEEP_HOURS).into()])?.raw() {
+            if let [SqlStorageValue::Integer(k), SqlStorageValue::Integer(s), SqlStorageValue::Integer(p)] = row?.as_slice() {
+                rows.insert(*k, (*s, *p));
             }
         }
+        let start = rows.keys().next().copied().unwrap_or(h).min(h);
+        let last = rows.keys().next_back().copied().unwrap_or(h);
+        let (mut messages, mut peak) = (vec![], vec![]);
+        for k in start..=h {
+            let (s, p) = rows.get(&k).copied().unwrap_or((0, if k > last { online } else { 0 }));
+            messages.push(s);
+            peak.push(if k == h { p.max(online) } else { p });
+        }
+        let since = self.get("SELECT v AS n FROM total WHERE k = 'since'", vec![]);
         Response::from_json(&serde_json::json!({
-            "machines_today": self.get("SELECT active AS n FROM day WHERE d = ?", vec![day.into()]),
-            "machines_week": self.get("SELECT active AS n FROM week WHERE w = ?", vec![week.into()]),
+            "machines_online": online,
             "machines_total": self.get("SELECT v AS n FROM total WHERE k = 'machines'", vec![]),
-            "messages_today": self.get("SELECT sent AS n FROM day WHERE d = ?", vec![day.into()]),
             "messages_total": self.get("SELECT v AS n FROM total WHERE k = 'sent'", vec![]),
             "since": if since > 0 { iso_day(since) } else { "-".into() },
-            "daily": daily,
-            "note": "Counts from the relay: machines = mailboxes that logged in; messages = sealed envelopes relayed (notes, asks, replies, receipts, presence). Agents per machine are inside the sealed envelopes and are not counted."
+            "start": start * 3600,
+            "step": 3600,
+            "messages": messages,
+            "peak_online": peak,
+            "note": "Hourly, UTC, last 30 days. machines_online = mailboxes with an open relay connection now; messages = sealed envelopes relayed; peak_online = most machines online at once in that hour. Agents are not counted: their names are inside the sealed envelopes."
         }))
     }
 }

@@ -114,8 +114,41 @@
   svg .mach { fill: var(--mute); }
   svg .badge { fill: var(--paper); stroke: var(--s3); stroke-width: 1; }
   svg .badget { fill: var(--mute); font-size: 10.5px; font-weight: 600; }
+  /* Relay stats: KPI cards over one chart */
+  .dot { display: inline-block; position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--hl); margin-right: 7px; vertical-align: 1px; }
+  .dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--hl); animation: la-pulse 2s ease-out infinite; }
+  @keyframes la-pulse { from { transform: scale(1); opacity: .65; } to { transform: scale(3.2); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .dot::after { animation: none; } }
+  .live { margin: 12px 0 0; font-size: 12.5px; }
+  .seg { margin-left: auto; display: flex; border: 1.5px solid var(--line); align-self: center; }
+  .seg[hidden], .chart[hidden] { display: none; }
+  .seg button { font: inherit; font-size: 12px; font-weight: 700; padding: 2px 11px; background: #fff; color: var(--ink); border: 0; border-left: 1px solid var(--line); cursor: pointer; }
+  .seg button:first-child { border-left: 0; }
+  .seg button:hover { background: var(--paper); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+  .panel { border: 1.5px solid var(--line); margin-top: 12px; background: #fff; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .kpi { position: relative; display: block; text-align: left; font: inherit; color: inherit; background: #fff; border: 0; border-right: 1px solid var(--soft); padding: 12px 16px 14px; margin: 0; }
+  .kpi:last-child { border-right: 0; }
+  button.kpi { cursor: pointer; }
+  button.kpi:hover { background: var(--paper); }
+  .kpi.on::after { content: ""; position: absolute; left: 16px; right: 16px; bottom: -1px; height: 3px; background: var(--hl); }
+  .kpi b { display: block; font-size: 26px; line-height: 1.2; font-weight: 800; margin-top: 4px; letter-spacing: -.02em; }
+  .kpi small { display: block; color: var(--mute); font-size: 11.5px; margin-top: 2px; }
+  .chart { position: relative; border-top: 1px solid var(--soft); padding: 14px 0 4px; }
+  .chart svg { overflow: hidden; touch-action: pan-y; }
+  svg .c-grid { stroke: var(--soft); stroke-width: 1; }
+  svg .c-base { stroke: var(--s4); stroke-width: 1; }
+  svg .c-line { fill: none; stroke: var(--hl); stroke-linejoin: round; stroke-linecap: round; }
+  svg .c-guide { stroke: var(--s3); stroke-width: 1; stroke-dasharray: 3 3; }
+  svg .c-dot { fill: #fff; stroke: var(--hl); stroke-width: 2.5; }
+  .tip { position: absolute; top: 0; left: 0; pointer-events: none; background: var(--ink); color: #fff; padding: 6px 10px; font-size: 12px; line-height: 1.45; white-space: nowrap; }
+  .tip[hidden] { display: none; }
+  .tip span { color: #cfcfc6; display: block; font-size: 11px; }
+  .tip b { font-size: 14px; }
   footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
-  @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; } }
+  @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; }
+    .kpis { grid-template-columns: 1fr 1fr; } .kpi { border-bottom: 1px solid var(--soft); } .kpi:nth-child(2n) { border-right: 0; } }
 </style>
 </head>
 <body>
@@ -129,12 +162,7 @@
       <div><span class="label">Network</span><b>outbound HTTPS only</b></div>
       <div><span class="label">Harnesses</span><b>pi, Claude Code, Codex, MCP</b></div>
     </div>
-    <div class="cells stat">
-      <div><span class="label">Machines this week</span><b>__MACHINES_WEEK__</b></div>
-      <div><span class="label">Messages today</span><b>__MSGS_TODAY__</b></div>
-      <div><span class="label">Messages since __STATS_SINCE__</span><b>__MSGS_TOTAL__</b></div>
-    </div>
-    <p class="mute">Live counts from the relay: machines that logged in, sealed messages relayed (notes, asks, replies, receipts, presence). Agents per machine stay inside the sealed envelopes and are not counted. <a href="/stats.json">stats.json</a></p>
+    <p class="live"><span class="dot"></span><b>__ONLINE__</b> machines online · <b>__MSGS_24H__</b> messages in the last 24 h · <a href="#stats">relay stats</a></p>
   </div>
 
   <section>
@@ -181,7 +209,168 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
     <p class="mute">Messages are end-to-end encrypted; the relay keeps sealed bytes for at most 48 h. Details: <a href="/protocol.md">protocol.md</a>.</p>
   </section>
 
-  <footer>letagents v0.5 alpha · <a href="https://github.com/pratikgajjar/letagents">GitHub</a> · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT</a> · No script, cookie, font or tracker.</footer>
+  <section id="stats">
+    <div class="head"><span class="num">05</span><h2>Relay stats</h2>
+      <div class="seg" id="st-period" role="group" aria-label="Period" hidden><button type="button" data-h="24" aria-pressed="true">24h</button><button type="button" data-h="168" aria-pressed="false">7d</button><button type="button" data-h="720" aria-pressed="false">30d</button></div>
+    </div>
+    <div class="panel">
+      <div class="kpis">
+        <div class="kpi"><span class="label"><span class="dot"></span>Machines online</span><b id="st-online">__ONLINE__</b><small>open relay connections now</small></div>
+        <button type="button" class="kpi on" data-m="messages" aria-pressed="true"><span class="label">Messages · <span class="st-per">24h</span></span><b id="st-msgs">__MSGS_24H__</b><small>sealed, relayed</small></button>
+        <button type="button" class="kpi" data-m="peak_online" aria-pressed="false"><span class="label">Peak online · <span class="st-per">24h</span></span><b id="st-peak">__PEAK_24H__</b><small>most machines at once</small></button>
+        <div class="kpi"><span class="label">Messages total</span><b id="st-total">__MSGS_TOTAL__</b><small>since __STATS_SINCE__ · __MACHINES_TOTAL__ machines</small></div>
+      </div>
+      <div class="chart" id="st-chart" hidden><div class="tip" id="st-tip" hidden></div></div>
+    </div>
+    <p class="mute">Counted per hour, kept 30 days: machines with an open relay connection, and sealed messages relayed. The relay keeps nothing else. It cannot count agents: their names are inside the sealed messages. <a href="/stats.json">stats.json</a></p>
+  </section>
+
+  <footer>letagents v0.5 alpha · <a href="https://github.com/pratikgajjar/letagents">GitHub</a> · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT</a> · No cookie, font, tracker or third-party script.</footer>
 </div>
+<script type="application/json" id="st-data">__STATS_JSON__</script>
+<script>
+// Relay stats chart: hourly series from the relay, drawn as SVG. No libraries.
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg", HOUR = 3600e3;
+  const box = $("st-chart"), tip = $("st-tip");
+  let S, hours = 24, metric = "messages", pts = [], svg;
+  const fmt = (v) => v.toLocaleString("en-US");
+  const el = (tag, attrs, parent) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return parent ? parent.appendChild(e) : e;
+  };
+  const day = (t, o) => new Date(t).toLocaleDateString("en-US", o);
+  const clock = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+  // Points for the period: one per hour (24h, 7d) or one per local day (30d).
+  function series() {
+    const a = S[metric], n = a.length, end = S.start * 1000 + (n - 1) * HOUR, out = [];
+    for (let k = hours - 1; k >= 0; k--) out.push({ t: end - k * HOUR, v: n - 1 - k >= 0 ? a[n - 1 - k] : 0, now: k === 0 });
+    if (hours < 720) return out;
+    const days = [];
+    for (const p of out) {
+      const d = new Date(p.t).setHours(0, 0, 0, 0), last = days[days.length - 1];
+      if (last && last.t === d) { last.v = metric === "messages" ? last.v + p.v : Math.max(last.v, p.v); last.now = p.now; }
+      else days.push({ t: d, v: p.v, day: true, now: p.now });
+    }
+    return days.slice(-30);
+  }
+
+  // Axis: whole-number steps of 1, 2 or 5 x 10^k, about 4 of them.
+  function axis(v) {
+    const raw = Math.max(v, 4) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+    return { step, max: Math.ceil(Math.max(v, 1) / step) * step };
+  }
+
+  // Monotone cubic curve (no overshoot below zero).
+  function curve(p) {
+    const n = p.length, d = [], m = [];
+    if (n < 3) return "M" + p.map((q) => q.join(",")).join("L");
+    for (let i = 0; i < n - 1; i++) d.push((p[i + 1][1] - p[i][1]) / (p[i + 1][0] - p[i][0]));
+    m[0] = d[0]; m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
+      const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
+      if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+    }
+    const r = (x) => Math.round(x * 10) / 10;
+    let s = `M${r(p[0][0])},${r(p[0][1])}`;
+    for (let i = 0; i < n - 1; i++) {
+      const h = (p[i + 1][0] - p[i][0]) / 3;
+      s += `C${r(p[i][0] + h)},${r(p[i][1] + m[i] * h)} ${r(p[i + 1][0] - h)},${r(p[i + 1][1] - m[i + 1] * h)} ${r(p[i + 1][0])},${r(p[i + 1][1])}`;
+    }
+    return s;
+  }
+
+  function draw() {
+    pts = series();
+    const W = box.clientWidth, H = 250, L = 52, R = 18, T = 10, B = 28;
+    const { step, max } = axis(Math.max(...pts.map((p) => p.v))), dx = (W - L - R) / Math.max(pts.length - 1, 1);
+    const X = (i) => L + i * dx, Y = (v) => T + (H - T - B) * (1 - v / max);
+    if (svg) svg.remove();
+    svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": `${metric === "messages" ? "Messages relayed" : "Peak machines online"}, last ${hours === 24 ? "24 hours" : hours === 168 ? "7 days" : "30 days"}` });
+    const g = el("linearGradient", { id: "st-fill", x1: 0, y1: 0, x2: 0, y2: 1 }, el("defs", {}, svg));
+    el("stop", { offset: 0, "stop-color": "#2fbf71", "stop-opacity": 0.28 }, g);
+    el("stop", { offset: 1, "stop-color": "#2fbf71", "stop-opacity": 0.02 }, g);
+    for (let v = 0; v <= max; v += step) {
+      const y = Y(v);
+      el("line", { class: v ? "c-grid" : "c-base", x1: L, x2: W - R, y1: y, y2: y }, svg);
+      el("text", { class: "tick", x: L - 10, y: y + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
+    }
+    pts.forEach((p, i) => {
+      const d = new Date(p.t);
+      let label = "";
+      if (hours === 24 && d.getHours() % 4 === 0) label = clock(p.t);
+      if (hours === 168 && d.getHours() === 0) label = `${day(p.t, { weekday: "short" })} ${d.getDate()}`;
+      if (hours === 720 && (pts.length - 1 - i) % 5 === 0) label = day(p.t, { month: "short", day: "numeric" });
+      if (label && X(i) > L + 14 && X(i) < W - R - 14) el("text", { class: "tick", x: X(i), y: H - 8, "text-anchor": "middle" }, svg).textContent = label;
+    });
+    const line = curve(pts.map((p, i) => [X(i), Y(p.v)]));
+    el("path", { d: `${line}L${X(pts.length - 1)},${Y(0)}L${L},${Y(0)}Z`, fill: "url(#st-fill)" }, svg);
+    el("path", { class: "c-line", d: line, "stroke-width": pts.length > 100 ? 1.75 : 2.5 }, svg);
+    const guide = el("line", { class: "c-guide", y1: T, y2: H - B, visibility: "hidden" }, svg);
+    const dot = el("circle", { class: "c-dot", r: 4.5, visibility: "hidden" }, svg);
+    const hit = el("rect", { x: L, y: 0, width: W - L - R, height: H, fill: "transparent" }, svg);
+    const hide = () => { guide.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.hidden = true; };
+    hit.addEventListener("pointermove", (e) => {
+      const x = e.clientX - svg.getBoundingClientRect().left, i = Math.max(0, Math.min(pts.length - 1, Math.round((x - L) / dx)));
+      const p = pts[i], px = X(i), py = Y(p.v);
+      for (const [a, v] of [["x1", px], ["x2", px]]) guide.setAttribute(a, v);
+      dot.setAttribute("cx", px); dot.setAttribute("cy", py);
+      guide.setAttribute("visibility", "visible"); dot.setAttribute("visibility", "visible");
+      const when = p.day ? day(p.t, { weekday: "short", month: "short", day: "numeric" })
+        : `${day(p.t, { weekday: "short", month: "short", day: "numeric" })}, ${clock(p.t)}–${clock(p.t + HOUR)}`;
+      const what = metric === "messages" ? (p.v === 1 ? "message" : "messages") : `machine${p.v === 1 ? "" : "s"} online (peak)`;
+      tip.innerHTML = "";
+      tip.append(Object.assign(document.createElement("span"), { textContent: when + (p.now ? (p.day ? " (today)" : " (now)") : "") }));
+      tip.append(Object.assign(document.createElement("b"), { textContent: fmt(p.v) }), " " + what);
+      tip.hidden = false;
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      const left = Math.max(0, Math.min(W - tw, px - tw / 2)), above = 14 + py - th - 12;
+      const top = above >= 0 ? above : 14 + py + 14;
+      tip.style.transform = `translate(${left}px, ${top}px)`;
+    });
+    hit.addEventListener("pointerleave", hide);
+    box.insertBefore(svg, tip);
+  }
+
+  function kpis() {
+    const n = S.messages.length, from = Math.max(0, n - hours);
+    $("st-online").textContent = fmt(S.machines_online);
+    $("st-msgs").textContent = fmt(S.messages.slice(from).reduce((a, b) => a + b, 0));
+    $("st-peak").textContent = fmt(Math.max(0, ...S.peak_online.slice(from)));
+    $("st-total").textContent = fmt(S.messages_total);
+    for (const e of document.querySelectorAll(".st-per")) e.textContent = hours === 24 ? "24h" : hours === 168 ? "7d" : "30d";
+  }
+
+  function load(data) {
+    if (!data || !Array.isArray(data.messages) || !data.messages.length) return false;
+    S = data; kpis(); draw();
+    return true;
+  }
+
+  box.hidden = false;
+  try { if (!load(JSON.parse($("st-data").textContent))) throw 0; } catch { box.hidden = true; return; }
+  $("st-period").hidden = false;
+  for (const b of document.querySelectorAll("#st-period button")) b.addEventListener("click", () => {
+    hours = +b.dataset.h;
+    for (const o of document.querySelectorAll("#st-period button")) o.setAttribute("aria-pressed", o === b);
+    kpis(); draw();
+  });
+  for (const b of document.querySelectorAll("button.kpi")) b.addEventListener("click", () => {
+    metric = b.dataset.m;
+    for (const o of document.querySelectorAll("button.kpi")) { o.classList.toggle("on", o === b); o.setAttribute("aria-pressed", o === b); }
+    draw();
+  });
+  let pending = 0;
+  addEventListener("resize", () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(draw); });
+  // Live numbers: the relay caches /stats.json for 60 s, so this costs it at most one read a minute.
+  setInterval(() => { if (!document.hidden) fetch("/stats.json").then((r) => r.json()).then(load).catch(() => {}); }, 60e3);
+})();
+</script>
 </body>
 </html>

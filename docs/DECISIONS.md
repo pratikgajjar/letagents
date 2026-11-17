@@ -2,6 +2,16 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 11. Public stats: machines online and messages per hour, nothing else
+
+**Decision:** `/stats.json` and the home page show machines online now, sealed messages relayed per hour, and peak machines online per hour, for 30 days. The day and week tables of v0.5.0 are gone. A machine is a mailbox with an open WebSocket. Each online mailbox keeps the hour it last confirmed it (`live_h`); the Stats object keeps a count per such hour and sums the last 24 h. A mailbox confirms only on its own events (login, envelope, close, alarm) and in the same single Stats call it already makes. Stats answers are cached at the edge for 60 s.
+
+**Why:** a live count needs closes, and closes get lost (a deploy drops every socket without close events). A plain +1/-1 gauge drifts up forever. A per-connection lease would need renewals, and renewals would wake hibernated mailboxes on every ping. With the hour marker, reconnects after a deploy do not count twice, and a lost close ages out in 24 h without any timer.
+
+**Keep true:** no mailbox id, IP or connection id in the Stats object; at most 720 hourly rows and 25 online rows; no wire field about agents (the relay cannot and must not count them); at most one Stats call per connect, disconnect or envelope.
+
+**Revisit when:** a machine can stay connected for over 24 h with no login, envelope or reconnect often enough to undercount (then: lengthen the window), or the counters need a breakdown that would need ids.
+
 ## 10. MCP Events in `letagents mcp` (supersedes the wait in #7)
 
 **Decision:** `letagents mcp` implements MCP Events per accepted SEP-3415 (commit 4165cc2), for one event, `message.received`, in all three modes: `events/poll`, `events/stream` (stdio notifications) and `events/subscribe` (Standard Webhooks). The source is the daemon's `peek` op: messages waiting for the agent, not removed. Events live in an in-memory ring buffer; a cursor is `<process epoch>.<seq>`. Webhook grants are finite (1 h default and cap, `ttlMs: null` too), because nothing is persisted. Stdio only, so the Streamable HTTP `Mcp-Name` rules do not apply.

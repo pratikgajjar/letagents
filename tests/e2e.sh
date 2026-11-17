@@ -222,13 +222,13 @@ fi
 
 # ---------- public usage counters ----------
 STATS=$(curl -fsS "$RELAY/stats.json")
-if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["machines_week"] >= 2 and s["messages_today"] >= 5 and s["messages_total"] >= s["messages_today"], s' "$STATS"; then
-  ok "stats.json counts machines and messages ($(python3 -c 'import json,sys; s=json.loads(sys.argv[1]); print(s["machines_week"], "machines,", s["messages_today"], "messages")' "$STATS"))"
+if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); m=s["messages"]; assert s["machines_online"] >= 2 and sum(m[-24:]) >= 5 and s["messages_total"] >= sum(m) and max(s["peak_online"][-24:]) >= 2 and len(m) == len(s["peak_online"]) <= 720, s' "$STATS"; then
+  ok "stats.json counts machines online and messages per hour ($(python3 -c 'import json,sys; s=json.loads(sys.argv[1]); print(s["machines_online"], "online,", sum(s["messages"][-24:]), "messages")' "$STATS"))"
 else
   fail "stats.json ($STATS)"
 fi
 PAGE=$(curl -fsS -H 'Accept: text/html' "$RELAY/")
-if grep -q "Machines this week" <<<"$PAGE" && ! grep -q "__MACHINES_WEEK__\|__MSGS_" <<<"$PAGE"; then ok "home page shows live counters"; else fail "home page counters"; fi
+if grep -q "machines online" <<<"$PAGE" && grep -q '"peak_online"' <<<"$PAGE" && ! grep -q "__ONLINE__\|__MSGS_\|__STATS_" <<<"$PAGE"; then ok "home page shows live counters"; else fail "home page counters"; fi
 
 # ---------- MCP Events: the official conformance suite ----------
 # modelcontextprotocol/conformance PR 521 (SEP-3415 server scenarios), pinned. The runner speaks Streamable
