@@ -260,7 +260,7 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                     Err(e) => eprintln!("invite from {}: {e}", sender.safety_number()),
                 },
                 Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") => {
-                    let (rid, req) = store::record_request(&sender, &inner.body, &inner.id, inner.ts);
+                    let (rid, req) = store::record_request(&sender, &inner.body, inner.ts);
                     eprintln!("contact request {rid} from \"{}\" ({}); accept with your human's approval: letagents contact accept {rid} <name>", req.name, req.safety);
                 }
                 Err(r) => eprintln!("refused {} {}: {r}", inner.kind, inner.id),

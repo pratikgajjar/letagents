@@ -94,10 +94,52 @@ fn is_b64_len(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Check a signed inbox login (PROTOCOL.md): fresh `ts` and a valid signature by the mailbox key.
+/// Pure CPU, so the edge runs it before the per-mailbox limit: a stranger who knows a mailbox id cannot
+/// use up that mailbox's logins. The Durable Object also checks that `ts` is newer than the last login.
+fn inbox_login(url: &Url, id: &str) -> std::result::Result<i64, &'static str> {
+    let q = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned()).unwrap_or_default();
+    let (ts, drop_hash, sig) = (q("ts"), q("drop_hash"), q("sig"));
+    let Ok(ts_n) = ts.parse::<i64>() else { return Err("stale") };
+    if ts.len() != 13 || (now_ms() - ts_n).abs() > CLOCK_SKEW_MS {
+        return Err("stale");
+    }
+    if !is_b64_len(&drop_hash, 43) || !is_b64_len(&sig, 86) {
+        return Err("bad auth");
+    }
+    let host = url.host_str().unwrap_or_default();
+    let msg = format!("letagents-inbox-v1\n{host}\n{id}\n{ts}\n{drop_hash}");
+    let verified = (|| -> Option<()> {
+        let pk: [u8; 32] = B64.decode(id).ok()?.try_into().ok()?;
+        let sg: [u8; 64] = B64.decode(&sig).ok()?.try_into().ok()?;
+        VerifyingKey::from_bytes(&pk).ok()?.verify_strict(msg.as_bytes(), &Signature::from_bytes(&sg)).ok()
+    })();
+    verified.map(|_| ts_n).ok_or("bad signature")
+}
+
+/// HTTPS only. Cloudflare's edge tells the worker the scheme the client used (`x-forwarded-proto`,
+/// `cf-visitor`); the URL scheme cannot be used, because `wrangler dev` serves plain HTTP. A plain-HTTP
+/// request is redirected for pages and refused for the API: a drop secret or login must not travel in clear.
+fn plain_http(req: &Request) -> bool {
+    let h = |k: &str| req.headers().get(k).ok().flatten().unwrap_or_default().to_ascii_lowercase();
+    h("x-forwarded-proto") == "http" || h("cf-visitor").contains("\"http\"")
+}
+
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let path = url.path().to_string();
+    if plain_http(&req) {
+        if path.starts_with("/v1/") {
+            return json(403, serde_json::json!({ "error": "use https" }));
+        }
+        let mut to = url.clone();
+        let _ = to.set_scheme("https");
+        let mut r = Response::empty()?.with_status(301);
+        r.headers_mut().set("location", to.as_str())?;
+        r.headers_mut().set("strict-transport-security", "max-age=31536000")?;
+        return Ok(r);
+    }
     // HEAD on a static route is answered like GET (link checkers and preview crawlers use it); the
     // runtime drops the body.
     let method = if req.method() == Method::Head { Method::Get } else { req.method() };
@@ -149,11 +191,27 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // Edge limits (Workers rate limiting binding): cheap, and no DO is touched. Cost guard rails:
         // per IP, per mailbox (inbox logins) and per location (all relay requests). Over a limit: 429.
         let ip = req.headers().get("cf-connecting-ip")?.unwrap_or_else(|| "unknown".into());
-        let mut checks = vec![(if *op == "send" { "RL_SEND" } else { "RL_INBOX" }, ip), ("RL_GLOBAL", "all".to_string())];
-        if *op == "inbox" {
-            checks.push(("RL_MAILBOX", id.to_string()));
-        }
-        for (limiter, key) in checks {
+        let checks = [(if *op == "send" { "RL_SEND" } else { "RL_INBOX" }, ip), ("RL_GLOBAL", "all".to_string())];
+        // The per-mailbox login limit counts only logins signed by the mailbox key (checked here, before
+        // any Durable Object wakes), so nobody else can use it up and lock the owner out.
+        let mailbox = if *op == "inbox" {
+            if let Err(e) = inbox_login(&url, id) {
+                for (limiter, key) in &checks {
+                    if let Ok(rl) = env.rate_limiter(limiter) {
+                        if !rl.limit(key.clone()).await?.success {
+                            let mut r = json(429, serde_json::json!({ "error": "slow down" }))?;
+                            r.headers_mut().set("retry-after", "30")?;
+                            return Ok(r);
+                        }
+                    }
+                }
+                return json(401, serde_json::json!({ "error": e }));
+            }
+            Some(("RL_MAILBOX", id.to_string()))
+        } else {
+            None
+        };
+        for (limiter, key) in checks.into_iter().chain(mailbox) {
             if let Ok(rl) = env.rate_limiter(limiter) {
                 if !rl.limit(key).await?.success {
                     let mut r = json(429, serde_json::json!({ "error": "slow down" }))?;
@@ -273,26 +331,13 @@ impl Mailbox {
     async fn inbox(&self, req: Request, id: &str) -> Result<Response> {
         let websocket = req.headers().get("upgrade")?.map(|u| u.to_ascii_lowercase()) == Some("websocket".into());
         let url = req.url()?;
-        let q = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned()).unwrap_or_default();
-        let (ts, drop_hash, sig) = (q("ts"), q("drop_hash"), q("sig"));
         let bad = |e: &str| json(401, serde_json::json!({ "error": e }));
-        let Ok(ts_n) = ts.parse::<i64>() else { return bad("stale") };
-        if ts.len() != 13 || (now_ms() - ts_n).abs() > CLOCK_SKEW_MS {
-            return bad("stale");
-        }
-        if !is_b64_len(&drop_hash, 43) || !is_b64_len(&sig, 86) {
-            return bad("bad auth");
-        }
-        let host = url.host_str().unwrap_or_default();
-        let msg = format!("letagents-inbox-v1\n{host}\n{id}\n{ts}\n{drop_hash}");
-        let verified = (|| -> Option<()> {
-            let pk: [u8; 32] = B64.decode(id).ok()?.try_into().ok()?;
-            let sg: [u8; 64] = B64.decode(&sig).ok()?.try_into().ok()?;
-            VerifyingKey::from_bytes(&pk).ok()?.verify_strict(msg.as_bytes(), &Signature::from_bytes(&sg)).ok()
-        })();
-        if verified.is_none() {
-            return bad("bad signature");
-        }
+        let ts_n = match inbox_login(&url, id) {
+            Ok(t) => t,
+            Err(e) => return bad(e),
+        };
+        let ts = ts_n.to_string();
+        let drop_hash = url.query_pairs().find(|(n, _)| n == "drop_hash").map(|(_, v)| v.into_owned()).unwrap_or_default();
         let last: i64 = self.meta("last_auth_ts")?.and_then(|v| v.parse().ok()).unwrap_or(0);
         if ts_n <= last {
             return bad("replayed");

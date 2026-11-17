@@ -32,7 +32,7 @@ Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in
 - `list`: asks the recipient's daemon who is online. It answers with `roster`, `reply_to` = the list id.
 - `roster`: body is a JSON array of `{name, harness, status, where}`. Sent unsolicited as presence when the set of agents changes.
 - `receipt`: `reply_to` = a message id, body `{status: pushed | queued | refused, detail}`. Sent for every accepted or refused send/ask/list from a known contact; never for receipts, rosters or hellos.
-- `hello`: carries the sender's full address (with drop) in `from`, its name in `body`, and `invite` = the code from the recipient's invite, if it has one. An unknown sender with an unused, unexpired code is added as a contact at once (allow `send,ask,reply,list`) and the code is deleted. Without a valid code the hello becomes a pending request for a human to accept.
+- `hello`: carries the sender's full address (with drop) in `from`, its name in `body`, and `invite` = the code from the recipient's invite, if it has one. An unknown sender with an unused, unexpired code is added as a contact at once (allow `send,ask,reply,list`) and the code is deleted. Without a valid code the hello becomes a pending request for a human to accept. The request id is made by the receiver (never taken from the message); a new hello from the same keys keeps it.
 
 Groups are local: the sender seals one copy per member.
 
@@ -47,6 +47,8 @@ Groups are local: the sender seals one copy per member.
 
 ## Relay API (HTTPS only, port 443)
 
+A plain-HTTP request (as Cloudflare's edge reports it: `x-forwarded-proto` or `cf-visitor`) gets `301` to https for pages and `403 {error:"use https"}` for `/v1/`.
+
 - `POST /v1/send/<id>`, header `x-la-drop: <drop>`, body = envelope → `202`. No sender authentication: the relay never learns who sent it.
 - `GET /v1/inbox/<id>?ts&drop_hash&sig`: with `Upgrade: websocket`, live delivery of `{t:"msg",seq,ct}` frames, then `{t:"ready"}`; the client answers `{t:"ack",seq}`, and `{t:"ping"}` is answered `{t:"pong"}` by the runtime. Without upgrade, returns `{msgs:[{seq,ct}]}` (up to 100).
   `sig` = Ed25519 over `"letagents-inbox-v1\n" ‖ host ‖ "\n" ‖ id ‖ "\n" ‖ ts ‖ "\n" ‖ drop_hash`. `ts` must be within 2 minutes and newer than the last login. The login sets `drop_hash` = base64url(SHA-256(drop)).
@@ -56,12 +58,12 @@ Groups are local: the sender seals one copy per member.
 
 Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop stale (`ts` older than 48 h) and already-seen `id`s, then apply local contact rules: unknown senders are dropped (a `hello` becomes a pending request), a known id with a different box key is refused, each contact has an allow list of kinds (`send`, `ask`, `reply`, `list`), and optional per-agent rules (`from` their agent, `to` our agent, `*` and `prefix*` globs) are checked in order: the first match decides. `list` is decided only by rules whose `to` is `*`.
 
-Routing on the receiver: a `send` or `ask` goes to `to_agent`. With no `to_agent`, it goes to the local agent that last wrote to the sender's agent (within 1 hour), else to the contact's configured session, else it is refused with a `receipt` whose detail starts `name an agent`. A `reply` goes to the local agent that sent the ask with id `reply_to`; the receiver keeps that link for 48 h. A reply with no known ask waits in the machine inbox. The daemon never delivers into a session the sender did not name or answer.
+Routing on the receiver: a `send` or `ask` goes to `to_agent`. With no `to_agent`, it goes to the local agent that last wrote to the sender's agent (within 1 hour), else to the contact's configured session, else it is refused with a `receipt` whose detail starts `name an agent`. A `reply` goes to the local agent that sent the ask with id `reply_to`; the receiver keeps that link for 48 h. A reply with no known ask waits in the machine inbox. The daemon never delivers into a session the sender did not name or answer. A sender cannot name the daemon's own sessions (a contact name, `<contact>/<agent>`, `letagents-daemon`), or a name with `/`, `@` or control characters: that is refused with `not an agent on this machine`, so a contact cannot make the receiver forward text to someone else. Of a contact's `roster`, the receiver keeps at most 64 agents. A `receipt` detail is shown as one line of at most 200 characters.
 
 ## What the relay keeps
 
 - Per mailbox: SHA-256(drop), last login time, and undelivered envelopes.
-- Limits: 32 KiB per envelope, 200 envelopes per mailbox, 48 h retention, 60 sends/minute per mailbox, 10 inbox logins/minute per mailbox and per IP, and a per-location cap on all relay requests. Over a limit the relay answers 429 with `retry-after`; clients wait and retry. Clients keep a WebSocket open (free for the relay while idle) and fall back to HTTPS polling with backoff. A mailbox idle for 14 days with nothing waiting is erased entirely.
+- Limits: 32 KiB per envelope, 200 envelopes per mailbox, 48 h retention, 60 sends/minute per mailbox, 10 inbox logins/minute per mailbox (only logins with a valid signature count, checked at the edge, so nobody else can use up a mailbox's logins) and per IP, and a per-location cap on all relay requests. Over a limit the relay answers 429 with `retry-after`; clients wait and retry. Clients keep a WebSocket open (free for the relay while idle) and fall back to HTTPS polling with backoff. A mailbox idle for 14 days with nothing waiting is erased entirely.
 - Public counters (`/stats.json`, shown on the home page): machines online now (mailboxes with an open WebSocket), envelopes accepted per hour, and the most machines online at once per hour, for the last 30 days (at most 720 hourly rows); totals since the counters started (envelopes, mailboxes). No mailbox id, IP or connection id is stored with them. Each mailbox keeps one marker: the hour it last told the counters it is online. It moves the marker only on its own events (login, envelope, close, cleanup alarm), at most once per hour, so keepalive pings stay free. The online count adds up only markers from the last 24 h, so a lost close event stops counting within 24 h. Agents are not counted: their names are inside the envelopes.
 - It sees the recipient id, padded size, time and IP addresses. It never sees text, sender identity, contacts or rules.
 

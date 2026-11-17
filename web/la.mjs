@@ -281,8 +281,11 @@ async function handle(me, as, want, ct, seen, got) {
       write("contacts.json", all);
       return console.error(`added contact ${name} (${await safety(sender)}): it used your invite code`), true;
     }
-    const rid = inner.id.slice(0, 8), name = inner.body.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32), s = await safety(sender);
-    write("requests.json", { ...read("requests.json", {}), [rid]: { address: address(sender, true), name, safety: s, ts: inner.ts } });
+    // The request id is made here, never taken from the message, so a sender cannot replace another's request.
+    const reqs = read("requests.json", {}), full = address(sender, true);
+    const rid = Object.keys(reqs).find((k) => reqs[k].address === full) || [...rand(4)].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const name = inner.body.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32), s = await safety(sender);
+    write("requests.json", { ...reqs, [rid]: { address: full, name, safety: s, ts: inner.ts } });
     return console.error(`contact request ${rid} from "${name}" (${s}); accept with your human's approval: contact accept ${rid} <name>`), true;
   }
   if (inner.kind === "receipt" || inner.kind === "roster") {

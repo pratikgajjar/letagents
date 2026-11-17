@@ -48,6 +48,25 @@ const ROSTER_REFRESH: Duration = Duration::from_secs(600);
 const PRESENCE_CHECK: Duration = Duration::from_secs(30);
 /// MCP agents heartbeat every 60 s; one missed by 3 minutes has left.
 const SOCKET_AGENT_TTL_MS: i64 = 3 * 60 * 1000;
+/// A contact's roster becomes local intercom sessions; at most this many per contact.
+const MAX_ROSTER: usize = 64;
+
+/// An agent name a contact may use (roster entries): no routing characters, no control characters.
+fn valid_agent_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 80 && !n.contains(['/', '@']) && !n.chars().any(char::is_control)
+}
+
+/// A target a contact may not name: our own intercom sessions (contacts, their agents, the system session)
+/// and pi-intercom's routing syntax. Delivering there would make this machine forward the text to a third
+/// party, signed as itself.
+fn reserved_target(hub: &Hub, t: &str) -> bool {
+    !valid_agent_name(t) || t == SYSTEM_SESSION || store::contacts().contains_key(t) || hub.proxy(t).is_some()
+}
+
+/// True when a broker message comes from one of our own sessions: the daemon must never forward it.
+fn own_session(hub: &Hub, id: &str) -> bool {
+    hub.system.read().unwrap().as_ref().is_some_and(|p| p.session_id == id) || hub.proxies.read().unwrap().values().any(|p| p.session_id == id)
+}
 
 pub fn socket_path() -> PathBuf {
     store::home().join("daemon.sock")
@@ -376,10 +395,13 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
     let _ = std::fs::remove_file(&sock);
     store::write("spool.json", &store::read::<Spool>("spool.json"))?; // ensures ~/.letagents exists (0700)
     let listener = UnixListener::bind(&sock)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
+    let my_uid = {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
-    }
+        // The service writes its log here; it holds no message text, but keep it private too.
+        let _ = std::fs::set_permissions(store::home().join("daemon.log"), std::fs::Permissions::from_mode(0o600));
+        std::fs::metadata(&sock)?.uid()
+    };
     let hub = Arc::new(Hub {
         me,
         notify,
@@ -408,7 +430,13 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
     tokio::spawn(redeliver_loop(hub.clone()));
     loop {
         let (conn, _) = listener.accept().await?;
-        tokio::spawn(serve_socket(hub.clone(), conn));
+        // Only our own user: the socket is 0600 in a 0700 directory, and the peer's uid is checked as well.
+        match conn.peer_cred() {
+            Ok(c) if c.uid() == my_uid => {
+                tokio::spawn(serve_socket(hub.clone(), conn));
+            }
+            _ => log("refused a daemon.sock connection from another user"),
+        }
     }
 }
 
@@ -500,6 +528,9 @@ async fn sync_agent_proxies(hub: &Arc<Hub>, contact: &str, agents: &[Agent]) {
 
 /// A local pi agent sent or asked a contact or remote-agent session, or replied to a forwarded ask.
 async fn from_intercom(hub: &Hub, m: Local) {
+    if own_session(hub, &m.from_id) {
+        return log(format!("ignored a message from our own session to {}", m.proxy));
+    }
     if m.proxy == SYSTEM_SESSION {
         // A pi agent answered a local ask that we pushed into its session.
         let ask = m.reply_to.as_ref().and_then(|r| hub.local_ask_by_intercom.lock().unwrap().remove(r));
@@ -684,6 +715,13 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     let to_local = match inner.kind.as_str() {
         "list" | "reply" => "*".to_string(),
         _ => match target_for(&hub, &inner, &sender) {
+            Some(t) if reserved_target(&hub, &t) => {
+                if let Ok((contact, _)) = store::contact_of(&sender) {
+                    log(format!("REFUSED {} {} from {contact}/{from_agent}: {t:?} is not an agent here", inner.kind, inner.id));
+                    hub.receipt(&contact, &inner.id, "refused", "not an agent on this machine (see letagents list)").await;
+                }
+                return;
+            }
             Some(t) => t,
             None => {
                 // No agent named and no conversation to continue: never guess a session.
@@ -827,8 +865,9 @@ async fn resolve_waiter(hub: &Hub, waiter: Option<Waiter>, reply: Spooled) {
 async fn on_receipt(hub: &Hub, contact: &str, inner: Inner) {
     let Some(of) = inner.reply_to.clone() else { return };
     let v: Value = serde_json::from_str(&inner.body).unwrap_or(json!({}));
-    let status = v["status"].as_str().unwrap_or("?").to_string();
-    let detail = v["detail"].as_str().unwrap_or_default().to_string();
+    let status = v["status"].as_str().unwrap_or("?").chars().filter(char::is_ascii_alphabetic).take(16).collect::<String>();
+    // The detail is the contact's text: one short line, so it cannot pose as a message header in a session.
+    let detail: String = v["detail"].as_str().unwrap_or_default().chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
     log(format!("receipt from {contact}: {status} {detail}"));
     let waiter = hub.receipts.lock().unwrap().remove(&of);
     match waiter {
@@ -854,7 +893,13 @@ async fn on_receipt(hub: &Hub, contact: &str, inner: Inner) {
 
 async fn on_roster(hub: &Arc<Hub>, contact: &str, inner: Inner) {
     let agents: Vec<Agent> = serde_json::from_str(&inner.body).unwrap_or_default();
-    let agents: Vec<Agent> = agents.into_iter().filter(|a| !a.name.is_empty() && !a.name.contains('/') && !a.name.contains('@') && a.name.len() <= 80).collect();
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).take(80).collect::<String>();
+    let agents: Vec<Agent> = agents
+        .into_iter()
+        .filter(|a| valid_agent_name(&a.name))
+        .take(MAX_ROSTER)
+        .map(|a| Agent { harness: clean(&a.harness), status: clean(&a.status), r#where: clean(&a.r#where), name: a.name })
+        .collect();
     hub.rosters.lock().unwrap().insert(contact.to_string(), agents.clone());
     if let Some(tx) = inner.reply_to.as_ref().and_then(|r| hub.list_waiters.lock().unwrap().remove(r)) {
         let _ = tx.send(agents.clone());
@@ -883,7 +928,7 @@ async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
         };
         return notify(hub, &inner.id, note).await;
     }
-    let (rid, req) = store::record_request(&sender, &inner.body, &inner.id, inner.ts);
+    let (rid, req) = store::record_request(&sender, &inner.body, inner.ts);
     log(format!("contact request {rid} from \"{}\" ({})", req.name, req.safety));
     let note = format!(
         "[letagents] contact request {rid} from an agent calling itself \"{}\", safety number {}.\nAsk your human to confirm this safety number with them, then run: letagents contact accept {rid} <name>",

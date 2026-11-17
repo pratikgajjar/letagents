@@ -21,8 +21,12 @@ pub fn read<T: DeserializeOwned + Default>(name: &str) -> T {
 }
 
 pub fn write<T: Serialize>(name: &str, v: &T) -> Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(home())?;
+    // A directory made before (by hand, or by another tool) may be open to other users: close it.
+    if std::fs::metadata(home())?.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(home(), std::fs::Permissions::from_mode(0o700))?;
+    }
     let tmp = path(&format!("{name}.tmp"));
     {
         use std::io::Write;
@@ -87,8 +91,13 @@ pub fn new_invite() -> Result<String> {
     Ok(code)
 }
 
+/// Serializes read-modify-write of invites.json and contacts.json inside the daemon: two hellos that carry
+/// one code and arrive together must not both redeem it.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Use an invite code: true once if it exists and has not expired; it is deleted either way.
 pub fn redeem_invite(code: &str) -> bool {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all: Invites = read("invites.json");
     let hit = all.remove(&invite_key(code)).is_some_and(|exp| exp > now_ms());
     all.retain(|_, exp| *exp > now_ms());
@@ -110,6 +119,7 @@ pub fn split_invite(addr: &str) -> (String, Option<String>) {
 pub fn accept_invited(sender: &Peer, claimed_name: &str) -> Result<String> {
     let base: String = claimed_name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_".contains(*c)).take(32).collect();
     let base = if base.is_empty() { "agent".to_string() } else { base };
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = contacts();
     let mut name = base.clone();
     let mut n = 2;
@@ -209,11 +219,21 @@ impl Seen {
 }
 
 /// Queue a hello from an unknown agent as a pending contact request. Returns its short id.
-pub fn record_request(sender: &Peer, claimed_name: &str, msg_id: &str, ts: i64) -> (String, Request) {
+/// The id is made here, never taken from the message: a sender must not be able to pick the id of
+/// someone else's request and replace it. A new hello from the same keys keeps its id.
+pub fn record_request(sender: &Peer, claimed_name: &str, ts: i64) -> (String, Request) {
     let name: String = claimed_name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c)).take(32).collect();
     let req = Request { address: sender.address(true), name, safety: sender.safety_number(), ts };
-    let rid: String = msg_id.chars().take(8).collect();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = requests();
+    let same = |r: &Request| Peer::parse(&r.address).is_ok_and(|p| p.same_keys(sender));
+    let rid = all.iter().find(|(_, r)| same(r)).map(|(k, _)| k.clone()).unwrap_or_else(|| loop {
+        use rand::RngCore;
+        let k = data_encoding::HEXLOWER.encode(&rand::rngs::OsRng.next_u32().to_be_bytes());
+        if !all.contains_key(&k) {
+            break k;
+        }
+    });
     all.insert(rid.clone(), req.clone());
     let _ = write("requests.json", &all);
     (rid, req)

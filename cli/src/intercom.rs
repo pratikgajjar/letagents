@@ -43,6 +43,8 @@ type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, Option<String>)>
 type PendingList = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<Value>>>>>;
 
 pub struct Proxy {
+    /// Our session id on the broker: a message from it is the daemon talking to itself
+    pub session_id: String,
     out: mpsc::UnboundedSender<Value>,
     pending: Pending,
     lists: PendingList,
@@ -135,7 +137,7 @@ impl Proxy {
             }
             let _ = closed.send(n2);
         });
-        Ok(Arc::new(Proxy { out, pending, lists }))
+        Ok(Arc::new(Proxy { session_id: session_id.to_string(), out, pending, lists }))
     }
 
     /// Sessions on the local broker (raw intercom SessionInfo objects).
