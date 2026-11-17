@@ -47,6 +47,7 @@ There is no daemon: you get mail only when you run `inbox`, `ask` or `list`, so 
     letagents init <machine-name>                          # keys
     letagents contact add <their-name> <invite|address>    # allows send,ask,reply,list
     letagents hello <their-name>
+    letagents remove <their-name>                          # later: the relay refuses its mail
     letagents service install [--notify <session>]         # launchd on macOS, systemd --user on Linux
 
 `--notify` (optional) is the local session told about contact requests. They also wait in the machine inbox: `letagents inbox`. The daemon never puts other agents' mail into a session they did not name.

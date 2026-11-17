@@ -174,7 +174,7 @@ check "A5 ack forged by mallory: 401 ($out)" test "$out" = 401
 # (The owner's login comes from its own IP, as on the internet: in wrangler dev all local binaries share one.)
 for i in $(seq 1 12); do curl -s -o /dev/null -H "cf-connecting-ip: 10.2.0.$i" "$RELAY/v1/inbox/$D_ID?ts=$now&drop_hash=x&sig=y"; done
 out=$(node "$AT" get "$(node "$AT" login dana)" ip=10.2.1.1 | sed -n '1p;$p' | tr '\n' ' ')
-check "A6 12 junk logins from 12 IPs do not lock dana out; the mail is still there (${out:0:40})" grep -q '^200 {"msgs":\[{' <<<"$out"
+check "A6 12 junk logins from 12 IPs do not lock dana out; the mail is still there (${out:0:40})" grep -q '^200 {.*"msgs":\[{' <<<"$out"
 
 # Sender authenticity inside the envelope.
 before=$(count "$T/alice.log" "bad signature")
@@ -264,18 +264,20 @@ import re, sys
 w = open(sys.argv[1], "rb").read()
 for i in sys.argv[2:]:
     pos = [m.start() for m in re.finditer(re.escape(i.encode()), w)]
-    assert pos and all(w[p-10:p] == b"/v1/inbox/" or w[p-8:p] in (b"/v1/ack/", b"/v1/send/") or w[p-9:p] == b"/v1/send/" for p in pos), i' "$T/wire.bin" "$B_ID" "$A_ID"
+    assert pos and all(w[p-10:p] in (b"/v1/inbox/", b"/v1/drops/") or w[p-8:p] in (b"/v1/ack/", b"/v1/send/") or w[p-9:p] == b"/v1/send/" for p in pos), i' "$T/wire.bin" "$B_ID" "$A_ID"
 check "B2 relay log: no message text" bash -c "! grep -q '$SECRET' '$T/relay.log'"
 check "B3 relay storage: no message text anywhere" bash -c "! grep -raq '$SECRET' '$T/state'"
-check "B3 relay storage: per mailbox only the drop hash, times and counters; no mailbox id" python3 -c '
-import glob, sqlite3, sys
+check "B3 relay storage: per mailbox only drop-code hashes, times and counters; no mailbox id, no names" python3 -c '
+import glob, re, sqlite3, sys
 dbs = [f for f in glob.glob(sys.argv[1] + "/v3/do/letagents-Mailbox/*.sqlite") if not f.endswith("metadata.sqlite")]
 assert dbs
 for f in dbs:
     db = sqlite3.connect(f)
     keys = {k for (k,) in db.execute("SELECT k FROM meta")}
-    assert keys <= {"drop_hash", "last_auth_ts", "last_seen", "live_h", "counted"}, keys
-    rows = repr(db.execute("SELECT * FROM meta").fetchall()).encode() + b"".join(ct for (ct,) in db.execute("SELECT ct FROM msgs"))
+    assert keys <= {"drop_hash", "last_auth_ts", "last_seen", "live_h", "counted", "drops_ts"}, keys
+    drops = db.execute("SELECT h, exp FROM drops").fetchall() if db.execute("SELECT 1 FROM sqlite_master WHERE name = \"drops\"").fetchone() else []
+    assert len(drops) <= 64 and all(re.fullmatch(r"[A-Za-z0-9_-]{43}", h) and isinstance(e, int) for h, e in drops), drops
+    rows = repr(db.execute("SELECT * FROM meta").fetchall()).encode() + repr(drops).encode() + b"".join(ct for (ct,) in db.execute("SELECT ct FROM msgs"))
     for i in sys.argv[2:]: assert i.encode() not in rows, (f, i)' "$T/state" "$A_ID" "$B_ID" "$D_ID" "$(cut -d. -f2 <<<"$C")"
 # A malicious relay replays everything it carried to alice, after her daemon restarted.
 python3 - "$T/wire.bin" "$A_ID" "$T/replay" <<'PY'
@@ -401,6 +403,66 @@ check "D3 MCP webhooks: no plain http, loopback, cloud metadata or localhost" py
 import json, sys
 r = {m.get("id"): m for m in map(json.loads, filter(str.strip, open(sys.argv[1])))}
 assert all("error" in r[i] for i in (5, 6, 7, 8)), [r[i] for i in (5, 6, 7, 8)]' "$T/mcp.out"
+
+# ---------- G. per-contact drop codes ----------
+# Each of alice's contacts writes to her with its own drop code. Removing carol deletes her code at the relay.
+field() { python3 -c 'import json,sys; c=json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(c.get(sys.argv[3], "") if sys.argv[3] != "code" else c["address"].split(".")[3])' "$T/$1/contacts.json" "$2" "$3"; }
+moved() { [ "$(field "$1" "$2" our_drop_ok)" = True ]; }
+check "G0 bob and carol confirmed their own drop codes with alice (both ways)" wait_for 30 bash -c "$(declare -f field moved); T='$T'; moved alice bobmach && moved alice carolmach && moved bob alicemach && moved carol alicemach"
+SHARED=$(cut -d. -f4 <<<"$A")
+CCODE=$(field carol alicemach code); BCODE=$(field bob alicemach code)
+check "G1 carol and bob write with codes of their own, not the shared one" test -n "$CCODE" -a "$CCODE" != "$SHARED" -a "$CCODE" != "$BCODE" -a "$BCODE" != "$SHARED"
+# Impersonation with another contact's code: the code lets bob drop mail, it does not make him carol.
+X=$(mark impersonate)
+node "$AT" seal bob "$A" kind=send to_agent=planner from_agent=worker body="$X" >"$T/g.env"
+out=$(node "$AT" post "$A" "$T/g.env" drop="$CCODE" ip=10.1.7.1)
+check "G2 bob drops mail with carol's code (relay: $out); alice's planner gets it as bob's" wait_for 10 bash -c "grep '$X' '$T/pi-planner.out' | grep -q 'verified bobmach/worker' && ! grep '$X' '$T/pi-planner.out' | grep -q carolmach"
+before=$(count "$T/alice.log" "bad signature")
+node "$AT" seal bob "$A" from="$(cut -d. -f1-3 <<<"$C")" kind=send to_agent=planner body="$X-2" >"$T/g.env"
+node "$AT" post "$A" "$T/g.env" drop="$CCODE" ip=10.1.7.2 >/dev/null
+check "G2 bob signs as carol and uses carol's code: dropped (bad signature)" wait_for 10 logged "$T/alice.log" "bad signature" -gt "$before"
+A_CAROL=$(field alice carolmach code); A_BOB=$(field alice bobmach code)
+node "$AT" seal bob "$A" kind=receipt reply_to=x drop="$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" body='{"status":"queued"}' >"$T/g.env"
+node "$AT" post "$A" "$T/g.env" ip=10.1.7.3 >/dev/null
+check "G2 bob's drop field changes only how alice reaches bob, never carol" wait_for 10 bash -c "$(declare -f field); T='$T'; [ \"\$(field alice bobmach code)\" != '$A_BOB' ] && [ \"\$(field alice carolmach code)\" = '$A_CAROL' ]"
+node "$AT" seal bob "$A" kind=receipt reply_to=x drop="$(field bob alicemach our_drop)" body='{"status":"queued"}' >"$T/g.env"
+node "$AT" post "$A" "$T/g.env" ip=10.1.7.4 >/dev/null
+wait_for 10 bash -c "$(declare -f field); T='$T'; [ \"\$(field alice bobmach code)\" = '$(field bob alicemach our_drop)' ]" || die "bob's code at alice not restored"
+# alice removes carol.
+out=$(la alice remove carolmach 2>&1)
+check "G3 alice removes carol: the relay table is updated ($out)" grep -q "refuses its drop code" <<<"$out"
+check "G3 every remaining contact has its own code, so the shared code was replaced" test "$(addr alice | cut -d. -f4)" != "$SHARED"
+node "$AT" seal carol "$A" kind=send to_agent=planner body="$X-3" >"$T/g.env"
+out=$(node "$AT" post "$A" "$T/g.env" drop="$CCODE" ip=10.1.7.5)
+check "G3 removed carol's send with her own code: refused at the relay, nothing stored ($out)" grep -q '^404 ' <<<"$out"
+out=$(node "$AT" post "$A" "$T/g.env" drop="$SHARED" ip=10.1.7.6)
+check "G3 removed carol's send with the old shared code: refused at the relay ($out)" grep -q '^404 ' <<<"$out"
+out=$(la carol send alicemach/planner "$X-4" --as worker 2>&1)
+check "G3 carol's own client: the relay refuses it ($out)" grep -q "404" <<<"$out"
+out=$(la bob send alicemach/planner "$(mark after)" --as worker 2>&1)
+check "G3 control: bob still reaches alice ($out)" grep -q "pushed" <<<"$out"
+# A relay operator (or anyone with the wire) replays alice's first table, which still held carol's code.
+python3 - "$T/wire.bin" "$A_ID" "$T/oldtable" <<'PY'
+import re, sys
+w = open(sys.argv[1], "rb").read()
+m = re.search(rb"POST (/v1/drops/" + re.escape(sys.argv[2].encode()) + rb"\?[^ ]*) HTTP/1.1\r\n(.*?)\r\n\r\n", w, re.S)
+h = {k.lower(): v for k, v in (l.split(b": ", 1) for l in m.group(2).split(b"\r\n") if b": " in l)}
+open(sys.argv[3] + ".path", "wb").write(m.group(1)); open(sys.argv[3] + ".body", "wb").write(w[m.end():m.end() + int(h[b"content-length"])])
+PY
+out=$(curl -s -w ' %{http_code}' -X POST -H 'cf-connecting-ip: 10.1.7.7' -H 'content-type: application/json' --data-binary @"$T/oldtable.body" "$RELAY$(cat "$T/oldtable.path")")
+check "G4 alice's old table (with carol's code) replayed from the wire: refused ($out)" grep -q '401$' <<<"$out"
+out=$(node "$AT" post "$A" "$T/g.env" drop="$CCODE" ip=10.1.7.8)
+check "G4 carol's code is still refused after the replay ($out)" grep -q '^404 ' <<<"$out"
+# The table is bounded and only the mailbox key can change it.
+out=$(node "$AT" drops dana n=65 ip=10.1.7.9)
+check "G5 65 drop codes for one mailbox: refused ($out)" grep -q '^400 .*too many' <<<"$out"
+out=$(node "$AT" drops dana n=64 ip=10.1.7.10)
+check "G5 64 drop codes: accepted ($out)" grep -q '^200 .*"drops":64' <<<"$out"
+out=$(node "$AT" drops dana n=1 sign_with=mallory ip=10.1.7.11)
+check "G5 mallory replaces dana's table: bad signature ($out)" grep -q '^401 .*bad signature' <<<"$out"
+ts=$(($(date +%s) * 1000 - 60000))
+out=$(node "$AT" drops dana n=1 ts=$ts ip=10.1.7.12)
+check "G5 a table update older than the last one: replayed ($out)" grep -q '^401 .*replayed' <<<"$out"
 
 # ---------- A. last: a flood of one mailbox is cut at 60 a minute ----------
 codes=$(for i in $(seq 1 64); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "cf-connecting-ip: 10.3.$i.1" -H "x-la-drop: $DROP" --data-binary @"$T/ok.env" "$RELAY/v1/send/$D_ID"; done | sort | uniq -c | tr -s ' ' | tr '\n' ',')

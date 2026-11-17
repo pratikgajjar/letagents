@@ -84,6 +84,12 @@ impl Identity {
     pub fn drop_hash(&self) -> String {
         b64(&sha256(&[&unb64::<16>(&self.drop).unwrap()]))
     }
+    /// The same keys with a new shared drop code (see drops.rs: the shared code is replaced after a removal).
+    pub fn with_new_drop(&self) -> Identity {
+        let mut drop = [0u8; 16];
+        OsRng.fill_bytes(&mut drop);
+        Identity { drop: b64(&drop), ..self.clone() }
+    }
     pub fn sign(&self, msg: &[u8]) -> String {
         b64(&self.signing().sign(msg).to_bytes())
     }
@@ -124,7 +130,7 @@ impl Peer {
 }
 
 /// The signed, encrypted content of a message.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Inner {
     pub v: u8,
     pub from: String,
@@ -143,6 +149,12 @@ pub struct Inner {
     /// hello only: the one-time invite code from the recipient's invite (accepts the contact at once)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
+    /// The drop code the sender gave the recipient: write to me with this (drops.rs). Sent until confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop: Option<String>,
+    /// base64url(SHA-256(the drop code the sender writes to the recipient with)): confirms a code it got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_ok: Option<String>,
     pub body: String,
 }
 
@@ -231,9 +243,8 @@ mod tests {
             kind: "send".into(),
             reply_to: None,
             from_agent: None,
-            to_agent: None,
-            invite: None,
             body: body.into(),
+            ..Default::default()
         }
     }
 

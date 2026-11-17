@@ -4,7 +4,7 @@ End-to-end encrypted messaging between AI agents. Users' setup guide: web/agents
 
 ## Layout
 
-- `cli/`: the `letagents` binary. `crypto.rs` (keys, sealing), `store.rs` (state in ~/.letagents), `relay.rs` (HTTPS/WSS client), `daemon.rs` (daemon.sock, spool, pi-intercom adapter), `intercom.rs` (pi-intercom broker client), `mcp.rs` (MCP server), `service.rs` (launchd/systemd).
+- `cli/`: the `letagents` binary. `crypto.rs` (keys, sealing), `store.rs` (state in ~/.letagents), `drops.rs` (per-contact drop codes), `relay.rs` (HTTPS/WSS client), `daemon.rs` (daemon.sock, spool, pi-intercom adapter), `intercom.rs` (pi-intercom broker client), `mcp.rs` (MCP server), `service.rs` (launchd/systemd).
 - `relay/`: Cloudflare Worker + Durable Object in Rust (workers-rs). Serves the API and the `web/` files.
 - `web/`: landing page and agent docs. `index.html` is generated: edit `web/src/page.html` or `web/src/gen.py`, then run `python3 web/src/build.py`.
 

@@ -3,6 +3,7 @@
 mod codex;
 mod crypto;
 mod daemon;
+mod drops;
 mod events;
 mod intercom;
 mod mcp;
@@ -68,6 +69,8 @@ enum Cmd {
     },
     /// List pending contact requests
     Requests,
+    /// Remove a contact and revoke its drop code at the relay (same as `contact rm`)
+    Remove { name: String },
     /// Send our address to a contact so they can add us
     Hello { contact: String },
     /// List every agent you can reach: local agents and agents on each contact's machine (needs the daemon)
@@ -160,6 +163,8 @@ enum ContactCmd {
         allow: String,
     },
     Ls,
+    /// Remove a contact and revoke its drop code at the relay (its sends are refused)
+    #[command(alias = "remove")]
     Rm { name: String },
 }
 
@@ -200,7 +205,7 @@ pub async fn compose_and_send(
 ) -> Result<String> {
     let c = store::contacts().get(contact).cloned().with_context(|| format!("no contact {contact}"))?;
     let to = Peer::parse(&c.address)?;
-    let inner = Inner {
+    let mut inner = Inner {
         v: 1,
         from: me.peer().address(false),
         to: to.id(),
@@ -210,11 +215,59 @@ pub async fn compose_and_send(
         reply_to,
         from_agent,
         to_agent,
-        invite: None,
         body: body.into(),
+        ..Default::default()
     };
+    drops::stamp(&mut inner, &c);
     relay::deliver(&to, seal(me, &to, &inner)?).await?;
     Ok(inner.id)
+}
+
+/// Send a hello to `contact`: our full address with the drop code we give it (the shared code if the relay
+/// could not be updated), and the invite code we got with its address, if any.
+async fn send_hello(me: &Identity, contact: &str) -> Result<(Peer, Contact)> {
+    drops::issue_missing();
+    if let Err(e) = drops::sync(false).await {
+        eprintln!("warning: could not update drop codes at the relay ({e}); the hello carries the shared code");
+    }
+    let c = store::contacts().get(contact).cloned().with_context(|| format!("no contact {contact}"))?;
+    let to = Peer::parse(&c.address)?;
+    let mut inner = Inner {
+        v: 1,
+        from: drops::hello_from(&store::identity()?, &c),
+        to: to.id(),
+        ts: now_ms(),
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: "hello".into(),
+        invite: c.invite.clone(),
+        body: me.name.clone(),
+        ..Default::default()
+    };
+    drops::stamp(&mut inner, &c);
+    relay::deliver(&to, seal(me, &to, &inner)?).await?;
+    Ok((to, c))
+}
+
+/// Remove a contact, revoke its drop code at the relay, and replace the shared code when no one needs it.
+async fn remove_contact(name: &str) -> Result<()> {
+    let mut all = store::contacts();
+    if all.remove(name).is_none() {
+        bail!("no contact {name}");
+    }
+    store::write("contacts.json", &all)?;
+    let waiting = drops::after_remove();
+    match drops::sync(false).await {
+        Ok(_) => println!("removed {name}; the relay refuses its drop code from now on"),
+        Err(e) => println!("removed {name}; the relay was not reached ({e}): its drop code works until the daemon updates the relay"),
+    }
+    if !waiting.is_empty() {
+        println!(
+            "note: your shared code (in `letagents whoami`) stays valid until these contacts write with their own codes (letagents 0.5.3 or later): {}",
+            waiting.join(", ")
+        );
+    }
+    let _ = daemon::call(json!({ "op": "reload" })).await;
+    Ok(())
 }
 
 fn parse_allow(s: &str) -> Result<Vec<String>> {
@@ -236,7 +289,13 @@ fn add_contact(name: &str, address: &str, allow: &str, session: Option<String>) 
     }
     let mut all = store::contacts();
     let rules = all.get(name).map(|c| c.rules.clone()).unwrap_or_default();
-    all.insert(name.into(), Contact { address, allow: parse_allow(allow)?, session, added: now_ms(), rules, invite });
+    // The same machine again keeps the drop code we gave it; a different one gets a new code later.
+    let (our_drop, our_drop_ok) = all
+        .get(name)
+        .filter(|c| Peer::parse(&c.address).is_ok_and(|o| o.same_keys(&p)))
+        .map(|c| (c.our_drop.clone(), c.our_drop_ok))
+        .unwrap_or_default();
+    all.insert(name.into(), Contact { address, allow: parse_allow(allow)?, session, added: now_ms(), rules, invite, our_drop, our_drop_ok });
     store::write("contacts.json", &all)?;
     Ok(p)
 }
@@ -248,6 +307,9 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                 return eprintln!("dropped replay {}", inner.id);
             }
             let _ = store::write("seen.json", seen);
+            if store::contact_of(&sender).is_ok() {
+                drops::learn(&sender, &inner);
+            }
             let from_agent = inner.from_agent.clone().unwrap_or_else(|| "agent".into());
             let to = inner.to_agent.clone().unwrap_or_else(|| "*".into());
             match store::authorize(&sender, &inner.kind, &from_agent, &to) {
@@ -255,7 +317,7 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                     "{}",
                     json!({ "from": format!("{name}/{from_agent}"), "kind": inner.kind, "id": inner.id, "reply_to": inner.reply_to, "to": inner.to_agent, "ts": inner.ts, "body": inner.body })
                 ),
-                Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") && inner.invite.as_deref().is_some_and(store::redeem_invite) => match store::accept_invited(&sender, &inner.body) {
+                Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") && inner.invite.as_deref().is_some_and(store::redeem_invite) => match store::accept_invited(&sender, &inner.body, inner.invite.as_deref().and_then(drops::take_invite)) {
                     Ok(name) => eprintln!("added contact {name} ({}): it used your invite code", sender.safety_number()),
                     Err(e) => eprintln!("invite from {}: {e}", sender.safety_number()),
                 },
@@ -287,7 +349,8 @@ async fn main() -> Result<()> {
             let me = ensure_identity(me).await?;
             ensure_daemon(no_service).await;
             connect_harnesses(no_service);
-            let a = format!("{}.{}", me.peer().address(true), store::new_invite()?);
+            let code = store::new_invite()?;
+            let a = format!("{}.{code}", invite_address(&me, &code).await?);
             println!(
                 "letagents invite from \"{n}\" (one use, valid 7 days; give it only to the agent you want)\naddress: {a}\nsafety number: {}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join {n} {a}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join {n} {a}",
                 me.peer().safety_number(),
@@ -300,10 +363,8 @@ async fn main() -> Result<()> {
                 bail!("this is an address without an invite code; ask for a new invite (letagents invite), or use: letagents contact add {name} <address>");
             }
             let me = ensure_identity(me).await?;
-            let p = add_contact(&name, &invite, "send,ask,reply,list", None)?;
-            let c = store::contacts().get(&name).cloned().context("contact")?;
-            let inner = Inner { v: 1, from: me.peer().address(true), to: p.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, invite: c.invite.clone(), body: me.name.clone() };
-            relay::deliver(&p, seal(&me, &p, &inner)?).await?;
+            add_contact(&name, &invite, "send,ask,reply,list", None)?;
+            let (p, _) = send_hello(&me, &name).await?;
             ensure_daemon(no_service).await;
             connect_harnesses(no_service);
             println!(
@@ -336,13 +397,7 @@ async fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            ContactCmd::Rm { name } => {
-                let mut all = store::contacts();
-                all.remove(&name);
-                store::write("contacts.json", &all)?;
-                println!("removed {name}");
-                Ok(())
-            }
+            ContactCmd::Rm { name } => remove_contact(&name).await,
         },
         Cmd::Rule { cmd } => {
             let mut all = store::contacts();
@@ -399,6 +454,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Remove { name } => remove_contact(&name).await,
         Cmd::Requests => {
             for (id, r) in store::requests() {
                 println!("{id}  \"{}\"  {}", r.name, r.safety);
@@ -407,12 +463,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Hello { contact } => {
             let me = store::identity()?;
-            // A hello carries our full address (with drop) so the other side can write back, and the invite
-            // code we got with their address, if any.
-            let c = store::contacts().get(&contact).cloned().with_context(|| format!("no contact {contact}"))?;
-            let to = Peer::parse(&c.address)?;
-            let inner = Inner { v: 1, from: me.peer().address(true), to: to.id(), ts: now_ms(), id: uuid::Uuid::new_v4().to_string(), kind: "hello".into(), reply_to: None, from_agent: None, to_agent: None, invite: c.invite.clone(), body: me.name.clone() };
-            relay::deliver(&to, seal(&me, &to, &inner)?).await?;
+            let (_, c) = send_hello(&me, &contact).await?;
             if c.invite.is_some() {
                 println!("hello sent to {contact} with its invite code; it adds you at once if the code is unused and less than 7 days old");
             } else {
@@ -486,16 +537,35 @@ async fn main() -> Result<()> {
         Cmd::Check => {
             let me = store::identity()?;
             let mut seen: Seen = store::read("seen.json");
-            let msgs = relay::fetch(&me).await?;
+            let (msgs, count) = relay::fetch_counted(&me).await?;
             for m in &msgs {
                 print_msg(&me, &m.bytes()?, &mut seen);
             }
-            relay::ack(&me, &msgs.iter().map(|m| m.seq).collect::<Vec<_>>()).await
+            relay::ack(&me, &msgs.iter().map(|m| m.seq).collect::<Vec<_>>()).await?;
+            // Codes learned or a shared code replaced above, or a relay that lost the table: update it.
+            if let Err(e) = drops::sync(count.is_some_and(drops::relay_count)).await {
+                eprintln!("warning: could not update drop codes at the relay: {e}");
+            }
+            Ok(())
         }
         Cmd::Daemon { notify } => daemon::run(store::identity()?, notify).await,
         Cmd::Service { action, notify } => service::run(&action, notify.as_deref()),
         Cmd::Mcp { as_ } => mcp::run(as_).await,
     }
+}
+
+/// The address for a new invite: with a drop code of its own, which becomes the joiner's code. If the relay
+/// cannot be updated, the shared code (it works, but only a removal that replaces it can revoke it).
+async fn invite_address(me: &Identity, code: &str) -> Result<String> {
+    let drop = drops::invite_drop(code, now_ms() + store::INVITE_TTL_MS)?;
+    if let Err(e) = drops::sync(false).await {
+        drops::drop_invite(code);
+        eprintln!("warning: could not register the invite's drop code at the relay ({e}); it carries the shared code");
+        return Ok(store::identity()?.peer().address(true));
+    }
+    let mut p = me.peer();
+    p.drop = Some(crypto::unb64::<16>(&drop)?);
+    Ok(p.address(true))
 }
 
 /// This machine's keys, created on first use (name: --me, else the host name). A new mailbox is opened

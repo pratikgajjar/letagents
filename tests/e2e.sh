@@ -119,6 +119,15 @@ if [ "$(grep -c -- "-> queued" <<<"$out")" = 2 ]; then ok "group send: 2 receipt
 check "group send: alice/ops got it" inbox_has alice ops "standup at 10"
 check "group send: alice/planner got it" inbox_has alice planner "standup at 10"
 
+# ---------- per-contact drop codes ----------
+# Added by bare addresses (the shared code), alice and bob move to codes of their own on the first exchange.
+own_code() { python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[sys.argv[2]]; sys.exit(0 if c.get("our_drop") and c.get("our_drop_ok") else 1)' "$T/$1/contacts.json" "$2"; }
+check "drop codes: alice and bob each confirmed a code of their own" wait_for 30 bash -c "$(declare -f own_code); T='$T'; own_code alice bob && own_code bob alice"
+check "drop codes: bob writes to alice with her code for him, not the shared one" python3 -c '
+import json, sys
+a, b = (json.load(open(f"{sys.argv[1]}/{m}/contacts.json")) for m in ("alice", "bob"))
+assert b["alice"]["address"].split(".")[3] == a["bob"]["our_drop"] != sys.argv[2].split(".")[3]' "$T" "$A_ADDR"
+
 # ---------- routing: never guess a session ----------
 # A send or ask that names no agent is refused with a hint; nothing lands in a session or the machine inbox.
 out=$(la bob send alice "plain note" --as worker 2>&1)

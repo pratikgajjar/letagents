@@ -13,6 +13,7 @@ const USAGE = `usage: node la.mjs <command>
   join <name> <invite> [--me <name>]  keys if needed, add the inviter, send hello with its code
   contact add <name> <address|invite> [--allow send,ask,reply,list]
   contact ls | requests | contact accept <request-id> <name>
+  remove <contact>                    remove a contact; the relay refuses its drop code
   hello <contact>                     send our address so they can add us
   send <machine>[/<agent>] <text>     note (flags: --as <your agent name>)
   ask <machine>[/<agent>] <text>      ask and wait for the reply (--timeout 60)
@@ -178,7 +179,9 @@ async function retry(req) {
 async function fetchInbox(me) {
   const r = await retry(async () => fetch(`${RELAY}/v1/inbox/${me.id}?${await login(me)}`));
   if (!r.ok) throw new Error(`relay refused: ${r.status} ${await r.text()}`);
-  return (await r.json()).msgs;
+  const j = await r.json();
+  await checkDrops(me, j.drops);
+  return j.msgs;
 }
 async function ack(me, seqs) {
   if (!seqs.length) return;
@@ -188,6 +191,124 @@ async function ack(me, seqs) {
     return fetch(`${RELAY}/v1/ack/${me.id}?ts=${ts}&seqs=${list}&sig=${sig}`, { method: "POST" });
   });
   if (!r.ok) throw new Error(`ack refused: ${r.status}`);
+}
+
+// ---------- per-contact drop codes (cli/src/drops.rs, PROTOCOL.md "Drop codes") ----------
+// Each contact gets its own drop code, sent in sealed messages (`drop`) until it confirms (`drop_ok`). The relay
+// holds only SHA-256 of each code (at most 64). drops.json: open invites' codes, a pending replacement of the
+// shared code, and what the relay holds.
+const MAX_CODES = 64;
+const hashCode = async (code) => b64(await sha256(unb64(code, 16)));
+const liveCode = (c) => c.exp === 0 || c.exp > Date.now();
+function dropState() {
+  const s = read("drops.json", {});
+  s.invites ||= {};
+  const open = read("invites.json", {});
+  for (const k in s.invites) if (!(s.invites[k].exp > Date.now() && open[k] > Date.now())) delete s.invites[k];
+  return s;
+}
+const saveDrops = (s) => write("drops.json", s);
+const inUse = (s, all) => Object.values(all).filter((c) => c.our_drop).length + Object.keys(s.invites).length;
+const registered = async (s, code) => {
+  if (!code || !s.relay) return false;
+  const h = await hashCode(code);
+  return s.relay.drops.some((c) => c.h === h && liveCode(c));
+};
+async function wantedDrops(s) {
+  const drops = [];
+  for (const c of Object.values(read("contacts.json", {}))) if (c.our_drop) drops.push({ h: await hashCode(c.our_drop), exp: 0 });
+  for (const i of Object.values(s.invites)) drops.push({ h: await hashCode(i.drop), exp: i.exp });
+  drops.sort((a, b) => (a.h < b.h ? -1 : a.h > b.h ? 1 : a.exp - b.exp));
+  const uniq = drops.filter((d, i) => i === 0 || drops[i - 1].h !== d.h).slice(0, MAX_CODES);
+  return { shared: await hashCode(read("identity.json", {}).drop), drops: uniq };
+}
+// Bring the relay's table in line with contacts, open invites and the shared code (signed, newer ts each time).
+async function syncDrops(me, force) {
+  const s = dropState(), want = await wantedDrops(s), body = JSON.stringify(want);
+  if (!force && s.relay && JSON.stringify(s.relay) === body) return false;
+  const r = await retry(async () => {
+    const ts = String(Date.now());
+    const sig = await sign(me, `letagents-drops-v1\n${HOST}\n${me.id}\n${ts}\n${body}`);
+    return fetch(`${RELAY}/v1/drops/${me.id}?ts=${ts}&sig=${sig}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+  });
+  if (r.status !== 200) throw new Error(`relay refused drop codes: ${r.status} ${await r.text()}`);
+  saveDrops({ ...dropState(), relay: want });
+  return true;
+}
+// The relay reports its count of live codes at login; a different count (an idle mailbox erased): send again.
+async function checkDrops(me, n) {
+  const s = read("drops.json", {});
+  if (n === undefined || (s.relay?.drops || []).filter(liveCode).length === n) return;
+  await syncDrops(me, true).catch((e) => console.error(`warning: drop codes: ${e.message}`));
+}
+// Give every contact without a drop code its own, while fewer than MAX_CODES are in use.
+function issueMissing() {
+  const s = dropState(), all = read("contacts.json", {});
+  let n = inUse(s, all), changed = false;
+  for (const c of Object.values(all)) {
+    if (c.our_drop || n >= MAX_CODES) continue;
+    c.our_drop = b64(rand(16));
+    delete c.our_drop_ok;
+    n++;
+    changed = true;
+  }
+  if (changed) write("contacts.json", all);
+  return changed;
+}
+async function inviteDrop(code, exp) {
+  const s = dropState();
+  if (inUse(s, read("contacts.json", {})) >= MAX_CODES) throw new Error(`${MAX_CODES} drop codes in use (contacts and open invites): remove a contact or wait for invites to expire`);
+  const drop = b64(rand(16));
+  s.invites[await inviteKey(code)] = { drop, exp };
+  saveDrops(s);
+  return drop;
+}
+// Read without pruning: the invite was just redeemed, so invites.json no longer has it.
+async function takeInvite(code) {
+  const s = read("drops.json", {}), k = await inviteKey(code), d = s.invites?.[k]?.drop;
+  if (!d) return undefined;
+  delete s.invites[k];
+  saveDrops(s);
+  return d;
+}
+// drop_ok: we write to the contact with this code; drop: write to us with ours (until it confirms).
+async function stamp(inner, c) {
+  const theirs = parsePeer(c.address).drop;
+  if (theirs) inner.drop_ok = b64(await sha256(theirs));
+  if (!c.our_drop_ok && (await registered(dropState(), c.our_drop))) inner.drop = c.our_drop;
+}
+const waiting = () => Object.entries(read("contacts.json", {})).filter(([, c]) => !(c.our_drop && c.our_drop_ok)).map(([n]) => n);
+// A removal asked for a new shared code: replace it once every contact writes with its own code.
+function rotateIfDue() {
+  const s = read("drops.json", {});
+  if (!s.rotate || waiting().length) return false;
+  write("identity.json", { ...read("identity.json", {}), drop: b64(rand(16)) });
+  delete s.rotate;
+  saveDrops(s);
+  return true;
+}
+// Apply the drop fields of a verified message from a known contact: only its own entry changes.
+async function learn(sender, inner) {
+  if (!inner.drop && !inner.drop_ok) return {};
+  const all = read("contacts.json", {});
+  const c = Object.values(all).find((c) => { const p = parsePeer(c.address); return p.id === sender.id && b64(p.rcv) === b64(sender.rcv); });
+  if (!c) return {};
+  let changed = false, newCode = false, confirmed = false;
+  if (inner.drop && /^[A-Za-z0-9_-]{22}$/.test(inner.drop) && parsePeer(c.address).drop && b64(parsePeer(c.address).drop) !== inner.drop) {
+    c.address = `${c.address.split(".").slice(0, 3).join(".")}.${inner.drop}`;
+    newCode = changed = true;
+  }
+  if (inner.drop_ok) {
+    const ok = !!c.our_drop && (await hashCode(c.our_drop)) === inner.drop_ok;
+    if (ok !== !!c.our_drop_ok) {
+      changed = true;
+      confirmed = ok;
+      if (ok) c.our_drop_ok = true;
+      else delete c.our_drop_ok;
+    }
+  }
+  if (changed) write("contacts.json", all);
+  return { newCode, rotated: confirmed && rotateIfDue() };
 }
 
 // ---------- contacts and rules (cli/src/store.rs) ----------
@@ -240,17 +361,26 @@ function addContact(name, full, allow) {
   const kinds = allow.split(",").map((s) => s.trim()).filter(Boolean);
   const bad = kinds.find((k) => !RULE_KINDS.includes(k));
   if (bad) throw new Error(`allow takes ${RULE_KINDS.join(",")} (got ${bad})`);
-  const all = read("contacts.json", {});
-  all[name] = { ...all[name], address: addr, allow: kinds, added: Date.now(), ...(invite ? { invite } : {}) };
+  const all = read("contacts.json", {}), old = all[name];
+  // The same machine again keeps the drop code we gave it; a different one gets a new code later.
+  const same = old && parsePeer(old.address).id === parsePeer(addr).id && b64(parsePeer(old.address).rcv) === b64(parsePeer(addr).rcv);
+  const { our_drop, our_drop_ok, ...rest } = old || {};
+  all[name] = { ...rest, ...(same && our_drop ? { our_drop, ...(our_drop_ok ? { our_drop_ok } : {}) } : {}), address: addr, allow: kinds, added: Date.now(), ...(invite ? { invite } : {}) };
   write("contacts.json", all);
 }
 
 // ---------- messages ----------
 async function compose(me, contact, kind, body, { replyTo, fromAgent, toAgent, full, invite } = {}) {
-  const c = read("contacts.json", {})[contact];
-  if (!c) throw new Error(`no contact ${contact}`);
-  const to = parsePeer(c.address);
-  const inner = { v: 1, from: address(me, full), to: to.id, ts: Date.now(), id: globalThis.crypto.randomUUID(), kind, reply_to: replyTo, from_agent: fromAgent, to_agent: toAgent, invite, body };
+  if (!read("contacts.json", {})[contact]) throw new Error(`no contact ${contact}`);
+  // A contact without a drop code gets one; the relay must hold it before we hand it out.
+  issueMissing();
+  await syncDrops(me).catch((e) => console.error(`warning: drop codes not updated at the relay (${e.message})`));
+  const c = read("contacts.json", {})[contact], to = parsePeer(c.address);
+  // A hello carries our full address: with the code we give this contact if the relay holds it, else the shared one.
+  const mine = { ...me, drop: unb64(read("identity.json", {}).drop, 16) };
+  if (full && (await registered(dropState(), c.our_drop))) mine.drop = unb64(c.our_drop, 16);
+  const inner = { v: 1, from: address(mine, full), to: to.id, ts: Date.now(), id: globalThis.crypto.randomUUID(), kind, reply_to: replyTo, from_agent: fromAgent, to_agent: toAgent, invite, body };
+  await stamp(inner, c);
   await deliver(to, await seal(me, to, inner));
   return inner.id;
 }
@@ -269,6 +399,7 @@ async function handle(me, as, want, ct, seen, got) {
   if (seen[inner.id]) return console.error(`dropped replay ${inner.id}`), true;
   seen[inner.id] = inner.ts;
   write("seen.json", seen);
+  if (!contactOf(sender).err && (await learn(sender, inner)).rotated) await syncDrops(me).catch(() => {});
   const fa = inner.from_agent || "agent";
   if (inner.kind === "hello") {
     const known = contactOf(sender);
@@ -277,8 +408,11 @@ async function handle(me, as, want, ct, seen, got) {
       const all = read("contacts.json", {}), base = inner.body.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) || "agent";
       let name = base;
       for (let n = 2; all[name]; n++) name = `${base}-${n}`;
-      all[name] = { address: address(sender, true), allow: [...RULE_KINDS], added: Date.now() };
+      // The invite's drop code (the joiner already writes with it) becomes this contact's own code.
+      const drop = await takeInvite(inner.invite);
+      all[name] = { address: address(sender, true), allow: [...RULE_KINDS], added: Date.now(), ...(drop ? { our_drop: drop, our_drop_ok: true } : {}) };
       write("contacts.json", all);
+      await syncDrops(me).catch(() => {});
       return console.error(`added contact ${name} (${await safety(sender)}): it used your invite code`), true;
     }
     // The request id is made here, never taken from the message, so a sender cannot replace another's request.
@@ -332,7 +466,7 @@ async function drain(me, as, want, secs, done) {
       ws.onmessage = (e) =>
         (chain = chain.then(async () => {
           const f = JSON.parse(e.data);
-          if (f.t === "ready") ready = true;
+          if (f.t === "ready") (ready = true), await checkDrops(me, f.drops);
           if (f.t === "msg" && (await handle(me, as, want, f.ct, seen, got))) ws.send(JSON.stringify({ t: "ack", seq: f.seq }));
           check();
         }));
@@ -355,6 +489,25 @@ async function answer(me, as, id, kind, secs) {
   if (m) return m;
   const r = got.find((m) => m.kind === "receipt" && JSON.parse(m.body).status === "refused");
   die(r ? `refused: ${JSON.parse(r.body).detail}` : `no ${kind} within ${secs}s`, r ? 3 : 2);
+}
+
+// Remove a contact; the relay refuses its drop code. The shared code is replaced once no contact needs it.
+async function removeContact(name) {
+  const all = read("contacts.json", {});
+  if (!all[name]) die(`no contact ${name}`);
+  delete all[name];
+  write("contacts.json", all);
+  saveDrops({ ...read("drops.json", {}), rotate: true });
+  rotateIfDue();
+  const me = await loadMe();
+  try {
+    await syncDrops(me);
+    console.log(`removed ${name}; the relay refuses its drop code from now on`);
+  } catch (e) {
+    console.log(`removed ${name}; the relay was not reached (${e.message}): its drop code works until this script next reaches the relay (any send updates it)`);
+  }
+  const w = waiting();
+  if (w.length) console.log(`note: your shared code (in whoami) stays valid until these contacts write with their own codes (letagents 0.5.3 or later): ${w.join(", ")}`);
 }
 
 function splitTo(to) {
@@ -384,7 +537,19 @@ async function main() {
       return console.log(`name:          ${me.name}\naddress:       ${address(me, true)}\nsafety number: ${await safety(me)}\nrelay:         ${RELAY}`);
     }
     case "invite": {
-      const me = await ensureMe(flags.me), addr = `${address(me, true)}.${await newInvite()}`;
+      // The invite's address carries a drop code of its own, which becomes the joiner's code.
+      const me = await ensureMe(flags.me), code = await newInvite(), drop = await inviteDrop(code, Date.now() + INVITE_TTL_MS);
+      let mine = { ...me, drop: unb64(drop, 16) };
+      try {
+        await syncDrops(me);
+      } catch (e) {
+        const s = dropState();
+        delete s.invites[await inviteKey(code)];
+        saveDrops(s);
+        console.error(`warning: could not register the invite's drop code at the relay (${e.message}); it carries the shared code`);
+        mine = me;
+      }
+      const addr = `${address(mine, true)}.${code}`;
       return console.log(`letagents invite from "${me.name}" (one use, valid 7 days; give it only to the agent you want)\naddress: ${addr}\nsafety number: ${await safety(me)}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join ${me.name} ${addr}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join ${me.name} ${addr}\nThis script has no daemon: run inbox to receive the other side's hello and mail.`);
     }
     case "join": {
@@ -409,12 +574,16 @@ async function main() {
         write("requests.json", reqs);
         return console.log(`accepted ${pos[3]} (${r.safety})`);
       }
+      if ((a === "rm" || a === "remove") && b) return await removeContact(b);
       if (a === "ls") {
         for (const [n, c] of Object.entries(contacts())) console.log(`${n.padEnd(16)} ${await safety(parsePeer(c.address))}  allow=${c.allow.join(",")}`);
         return;
       }
       return die(USAGE);
     }
+    case "remove":
+      if (!a) die(USAGE);
+      return await removeContact(a);
     case "requests":
       for (const [id, r] of Object.entries(read("requests.json", {}))) console.log(`${id}  "${r.name}"  ${r.safety}`);
       return;

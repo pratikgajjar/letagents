@@ -233,9 +233,36 @@ pub async fn deliver(to: &Peer, envelope: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// Replace this mailbox's drop-code table at the relay (drops.rs). `body` is the JSON table; it is signed as is.
+/// A refused `ts` (another process updated at the same moment) or a 429 is retried.
+pub async fn set_drops(me: &Identity, body: &str) -> Result<()> {
+    for attempt in 0..3 {
+        let ts = now_ms().to_string();
+        let sig = me.sign(format!("letagents-drops-v1\n{}\n{}\n{ts}\n{body}", auth_host(), me.id()).as_bytes());
+        let r = http_client()?
+            .post(format!("{}/v1/drops/{}?ts={ts}&sig={sig}", relay_url(), me.id()))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await?;
+        let status = r.status().as_u16();
+        if status == 200 {
+            return Ok(());
+        }
+        let text = r.text().await.unwrap_or_default();
+        if attempt < 2 && (status == 429 || text.contains("replayed")) {
+            tokio::time::sleep(Duration::from_millis(if status == 429 { 10_000 } else { 50 })).await;
+            continue;
+        }
+        bail!("relay refused drop codes: {status} {text}");
+    }
+    bail!("relay refused drop codes")
+}
+
 fn inbox_query(me: &Identity) -> String {
     let ts = now_ms().to_string();
-    let dh = me.drop_hash();
+    // The shared code is read fresh: a removal may have replaced it since this process started.
+    let dh = crate::store::identity().ok().filter(|i| i.id() == me.id()).unwrap_or_else(|| me.clone()).drop_hash();
     let sig = me.sign(format!("letagents-inbox-v1\n{}\n{}\n{ts}\n{dh}", auth_host(), me.id()).as_bytes());
     format!("ts={ts}&drop_hash={dh}&sig={sig}")
 }
@@ -254,15 +281,34 @@ impl Stored {
 
 /// One-shot HTTPS fetch of everything waiting (does not delete; call `ack`).
 pub async fn fetch(me: &Identity) -> Result<Vec<Stored>> {
+    Ok(fetch_counted(me).await?.0)
+}
+
+/// Like `fetch`, plus how many drop codes the relay holds for this mailbox.
+pub async fn fetch_counted(me: &Identity) -> Result<(Vec<Stored>, Option<i64>)> {
     #[derive(Deserialize)]
     struct R {
         msgs: Vec<Stored>,
+        drops: Option<i64>,
     }
     let r = http_client()?.get(format!("{}/v1/inbox/{}?{}", relay_url(), me.id(), inbox_query(me))).send().await?;
     if !r.status().is_success() {
         bail!("relay refused: {} {}", r.status(), r.text().await.unwrap_or_default());
     }
-    Ok(serde_json::from_slice::<R>(&r.bytes().await?)?.msgs)
+    let r = serde_json::from_slice::<R>(&r.bytes().await?)?;
+    Ok((r.msgs, r.drops))
+}
+
+/// The relay's count of drop codes differs from our last update: send the table again (in the background).
+fn check_drops(n: Option<i64>) {
+    if n.is_some_and(crate::drops::relay_count) {
+        tokio::spawn(async {
+            match crate::drops::sync(true).await {
+                Ok(_) => eprintln!("drop codes: relay table restored"),
+                Err(e) => eprintln!("drop codes: relay update failed: {e}"),
+            }
+        });
+    }
 }
 
 pub async fn ack(me: &Identity, seqs: &[i64]) -> Result<()> {
@@ -329,10 +375,10 @@ where
                             let Some(Ok(m)) = m else { break };
                             let Message::Text(t) = m else { continue };
                             #[derive(Deserialize)]
-                            struct F { t: String, seq: Option<i64>, ct: Option<String> }
+                            struct F { t: String, seq: Option<i64>, ct: Option<String>, drops: Option<i64> }
                             let Ok(f) = serde_json::from_str::<F>(t.as_str()) else { continue };
                             match (f.t.as_str(), f.seq, f.ct) {
-                                ("ready", _, _) => {},
+                                ("ready", _, _) => check_drops(f.drops),
                                 ("msg", Some(seq), Some(ct)) => {
                                     if let Ok(b) = B64.decode(ct) { on_msg(b).await; }
                                     let _ = tx.send(Message::text(format!(r#"{{"t":"ack","seq":{seq}}}"#))).await;
@@ -365,8 +411,9 @@ where
     F: FnMut(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    match fetch(me).await {
-        Ok(messages) => {
+    match fetch_counted(me).await {
+        Ok((messages, drops)) => {
+            check_drops(drops);
             let mut seqs = Vec::new();
             for message in messages {
                 if let Ok(bytes) = message.bytes() {

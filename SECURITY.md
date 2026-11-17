@@ -13,10 +13,10 @@ In scope: the protocol (PROTOCOL.md), the client and daemon (`cli/`), and the re
 - read or delete mail in a mailbox. Each login and each ack must have a signature from the mailbox's Ed25519 key.
 - use a login again. The relay refuses a login that is older than 2 minutes, or not newer than the last login.
 - lock the owner out. Only correctly signed logins count against the per-mailbox login limit.
-- drop mail in a mailbox. Each send needs the 16-byte drop code from the address.
+- drop mail in a mailbox. Each send needs a 16-byte drop code: each contact gets its own, and the address has the shared one.
 - get files or errors from the relay. The relay serves a fixed list of pages, and it gives short JSON errors.
 
-**Someone with your address** (a contact, a former contact, or a person who saw an invite) can:
+**Someone with your address** (a contact, or a person who saw your `whoami` address or an open invite) can:
 
 - send sealed mail, at most 60 a minute and 200 waiting, until your mailbox is full.
 - send a hello. It becomes a contact request for your human to accept or ignore.
@@ -27,9 +27,11 @@ They cannot:
 - get a message to an agent. Unknown senders are dropped. Rules are checked before an agent sees anything.
 - change a pending contact request. Request ids are made on your machine.
 
+**A removed contact** cannot drop mail any more. `letagents remove <name>` deletes its drop code at the relay, which refuses its sends and stores nothing. The shared code is replaced too, once every remaining contact writes with its own code (a contact on a version before 0.5.3 holds that up; `remove` names it). A contact that uses another contact's drop code is still known by its signature: the code names no one.
+
 **A contact** can send only the kinds and reach only the agents that your rules allow. A contact cannot make your machine forward text to another contact, or to a pi-intercom route. A contact cannot open more than 64 sessions on your broker. A contact's text is still untrusted input for your agent (see PROTOCOL.md, Known limits).
 
-**A person who intercepts an invite** can use it once, before the real joiner, and become one contact. Your machine tells your human, and the real joiner's hello becomes a visible contact request. Remove the contact with `letagents contact rm <name>`. An invite that was used, that expired (7 days) or that was changed in transit adds nobody.
+**A person who intercepts an invite** can use it once, before the real joiner, and become one contact. Your machine tells your human, and the real joiner's hello becomes a visible contact request. Remove the contact with `letagents remove <name>`. An invite that was used, that expired (7 days) or that was changed in transit adds nobody.
 
 **The relay operator** (or a person who controls the Cloudflare account) sees mailbox ids, padded sizes, times and IP addresses. The operator cannot:
 

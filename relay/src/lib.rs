@@ -48,6 +48,9 @@ const TTL_MS: i64 = 48 * 3600 * 1000; // undelivered mail is deleted after 48 h
 const IDLE_MS: i64 = 14 * 24 * 3600 * 1000; // a mailbox unused for 14 days is erased entirely
 const CLOCK_SKEW_MS: i64 = 120_000;
 const SEND_PER_MINUTE: u32 = 60; // per mailbox, on top of the per-IP edge limits
+const MAX_DROPS: usize = 64; // per mailbox: per-contact drop codes (hashes only), see PROTOCOL.md
+const MAX_DROPS_BODY: usize = 8 * 1024; // a table of 64 hashes is about 4 KiB
+const DROPS_PER_MINUTE: u32 = 20; // drop-table updates per mailbox
 
 fn now_ms() -> i64 {
     Date::now().as_millis() as i64
@@ -176,11 +179,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         _ => {}
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if let ["v1", op @ ("send" | "inbox" | "ack"), id] = parts.as_slice() {
+    if let ["v1", op @ ("send" | "inbox" | "ack" | "drops"), id] = parts.as_slice() {
         if !is_b64_len(id, 43) {
             return json(404, serde_json::json!({ "error": "not found" }));
         }
-        let ok_method = matches!((*op, req.method()), ("send", Method::Post) | ("inbox", Method::Get) | ("ack", Method::Post));
+        let ok_method = matches!((*op, req.method()), ("send", Method::Post) | ("inbox", Method::Get) | ("ack", Method::Post) | ("drops", Method::Post));
         if !ok_method {
             return json(405, serde_json::json!({ "error": "method not allowed" }));
         }
@@ -191,7 +194,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // Edge limits (Workers rate limiting binding): cheap, and no DO is touched. Cost guard rails:
         // per IP, per mailbox (inbox logins) and per location (all relay requests). Over a limit: 429.
         let ip = req.headers().get("cf-connecting-ip")?.unwrap_or_else(|| "unknown".into());
-        let checks = [(if *op == "send" { "RL_SEND" } else { "RL_INBOX" }, ip), ("RL_GLOBAL", "all".to_string())];
+        let per_ip = match *op {
+            "send" => "RL_SEND",
+            "drops" => "RL_DROPS",
+            _ => "RL_INBOX",
+        };
+        let checks = [(per_ip, ip), ("RL_GLOBAL", "all".to_string())];
         // The per-mailbox login limit counts only logins signed by the mailbox key (checked here, before
         // any Durable Object wakes), so nobody else can use it up and lock the owner out.
         let mailbox = if *op == "inbox" {
@@ -220,10 +228,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 }
             }
         }
-        if *op == "send" {
+        if matches!(*op, "send" | "drops") {
+            let max = if *op == "send" { MAX_ENVELOPE } else { MAX_DROPS_BODY };
             if let Some(len) = req.headers().get("content-length")?.and_then(|l| l.parse::<usize>().ok()) {
-                if len > MAX_ENVELOPE {
-                    return json(413, serde_json::json!({ "error": "envelope too large" }));
+                if len > max {
+                    return json(413, serde_json::json!({ "error": if *op == "send" { "envelope too large" } else { "too large" } }));
                 }
             }
         }
@@ -245,6 +254,18 @@ struct Count {
 struct Seq {
     seq: i64,
 }
+/// `POST /v1/drops/<id>` body: SHA-256 of the shared code and of each per-contact code.
+#[derive(Deserialize)]
+struct DropTable {
+    shared: String,
+    drops: Vec<DropCode>,
+}
+#[derive(Deserialize)]
+struct DropCode {
+    h: String,
+    #[serde(default)]
+    exp: i64,
+}
 #[derive(Deserialize)]
 struct ClientFrame {
     t: String,
@@ -257,6 +278,8 @@ pub struct Mailbox {
     env: Env,
     window_start: Cell<i64>,
     window_count: Cell<u32>,
+    drops_start: Cell<i64>,
+    drops_count: Cell<u32>,
 }
 
 impl Mailbox {
@@ -277,19 +300,28 @@ impl Mailbox {
         Ok(())
     }
 
-    /// Anyone holding the recipient's address (and so its drop secret) may drop an envelope.
-    /// The relay does not know or record who the sender is.
+    /// Live per-contact drop codes (not expired).
+    fn live_drops(&self) -> Result<i64> {
+        let c: Count = self.sql().exec("SELECT COUNT(*) AS n FROM drops WHERE exp = 0 OR exp > ?", vec![now_ms().into()])?.one()?;
+        Ok(c.n)
+    }
+
+    /// Anyone holding a drop code of the recipient (the shared one, or a per-contact one) may drop an envelope.
+    /// The relay does not know or record who the sender is, nor which contact a code was given to.
     async fn send(&self, mut req: Request) -> Result<Response> {
         let no_box = || json(404, serde_json::json!({ "error": "no such mailbox" }));
-        let Some(want) = self.meta("drop_hash")? else { return no_box() };
         let drop = req.headers().get("x-la-drop")?.unwrap_or_default();
         if !is_b64_len(&drop, 22) {
             return no_box();
         }
         let Ok(drop_bytes) = B64.decode(&drop) else { return no_box() };
         let got = B64.encode(Sha256::digest(&drop_bytes));
-        if !ct_eq(got.as_bytes(), want.as_bytes()) {
-            return no_box();
+        let shared = self.meta("drop_hash")?.is_some_and(|want| ct_eq(got.as_bytes(), want.as_bytes()));
+        if !shared {
+            let hit: Count = self.sql().exec("SELECT COUNT(*) AS n FROM drops WHERE h = ? AND (exp = 0 OR exp > ?)", vec![got.into(), now_ms().into()])?.one()?;
+            if hit.n == 0 {
+                return no_box();
+            }
         }
 
         let now = now_ms();
@@ -360,7 +392,7 @@ impl Mailbox {
                 }
             }
             self.report(counted).await?;
-            return json(200, serde_json::json!({ "msgs": msgs }));
+            return json(200, serde_json::json!({ "msgs": msgs, "drops": self.live_drops()? }));
         }
         let pair = WebSocketPair::new()?;
         self.state.accept_websocket_with_tags(&pair.server, &["owner"]);
@@ -370,12 +402,73 @@ impl Mailbox {
                 pair.server.send_with_str(serde_json::json!({ "t": "msg", "seq": seq, "ct": B64.encode(ct) }).to_string())?;
             }
         }
-        pair.server.send_with_str(r#"{"t":"ready"}"#)?;
+        pair.server.send_with_str(serde_json::json!({ "t": "ready", "drops": self.live_drops()? }).to_string())?;
         Response::from_websocket(pair.client)
     }
 }
 
 impl Mailbox {
+    /// Replace the mailbox's drop codes: the shared code's hash and at most MAX_DROPS per-contact hashes.
+    /// Signed by the mailbox key; `ts` must be newer than the last update, so an old table (one that still
+    /// holds a revoked code) cannot be replayed. The relay learns hashes and expiries, never whose they are.
+    async fn drops(&self, mut req: Request, id: &str) -> Result<Response> {
+        let url = req.url()?;
+        let q = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned()).unwrap_or_default();
+        let (ts, sig) = (q("ts"), q("sig"));
+        let bad = |e: &str| json(401, serde_json::json!({ "error": e }));
+        let Ok(ts_n) = ts.parse::<i64>() else { return bad("stale") };
+        if ts.len() != 13 || (now_ms() - ts_n).abs() > CLOCK_SKEW_MS {
+            return bad("stale");
+        }
+        if !is_b64_len(&sig, 86) {
+            return bad("bad auth");
+        }
+        let now = now_ms();
+        if now - self.drops_start.get() > 60_000 {
+            self.drops_start.set(now);
+            self.drops_count.set(0);
+        }
+        self.drops_count.set(self.drops_count.get() + 1);
+        if self.drops_count.get() > DROPS_PER_MINUTE {
+            return json(429, serde_json::json!({ "error": "slow down" }));
+        }
+        let body = req.bytes().await?;
+        if body.len() > MAX_DROPS_BODY {
+            return json(413, serde_json::json!({ "error": "too large" }));
+        }
+        let host = url.host_str().unwrap_or_default();
+        let msg = [format!("letagents-drops-v1\n{host}\n{id}\n{ts}\n").as_bytes(), &body].concat();
+        let verified = (|| -> Option<()> {
+            let pk: [u8; 32] = B64.decode(id).ok()?.try_into().ok()?;
+            let sg: [u8; 64] = B64.decode(&sig).ok()?.try_into().ok()?;
+            VerifyingKey::from_bytes(&pk).ok()?.verify_strict(&msg, &Signature::from_bytes(&sg)).ok()
+        })();
+        if verified.is_none() {
+            return bad("bad signature");
+        }
+        let last: i64 = self.meta("drops_ts")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        if ts_n <= last {
+            return bad("replayed");
+        }
+        let bad_table = |e: &str| json(400, serde_json::json!({ "error": e }));
+        let Ok(t) = serde_json::from_slice::<DropTable>(&body) else { return bad_table("bad drop table") };
+        if t.drops.len() > MAX_DROPS {
+            return bad_table("too many drop codes");
+        }
+        if !is_b64_len(&t.shared, 43) || t.drops.iter().any(|d| !is_b64_len(&d.h, 43) || d.exp < 0) {
+            return bad_table("bad drop table");
+        }
+        self.set_meta("drops_ts", &ts)?;
+        self.set_meta("drop_hash", &t.shared)?;
+        self.set_meta("last_seen", &now.to_string())?;
+        self.sql().exec("DELETE FROM drops", None)?;
+        for d in t.drops.iter().filter(|d| d.exp == 0 || d.exp > now) {
+            self.sql().exec("INSERT OR REPLACE INTO drops (h, exp) VALUES (?, ?)", vec![d.h.clone().into(), d.exp.into()])?;
+        }
+        self.schedule_cleanup().await?;
+        json(200, serde_json::json!({ "ok": true, "drops": self.live_drops()? }))
+    }
+
     /// Delete delivered envelopes. Signed by the mailbox key; idempotent, so a replayed ack is harmless.
     async fn ack(&self, req: Request, id: &str) -> Result<Response> {
         let url = req.url()?;
@@ -414,7 +507,9 @@ impl DurableObject for Mailbox {
             "CREATE TABLE IF NOT EXISTS msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, ct BLOB NOT NULL)",
             None,
         );
-        Self { state, env, window_start: Cell::new(0), window_count: Cell::new(0) }
+        // Per-contact drop codes: SHA-256 only, at most MAX_DROPS rows, exp 0 = until the owner removes it.
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS drops (h TEXT PRIMARY KEY, exp INTEGER NOT NULL)", None);
+        Self { state, env, window_start: Cell::new(0), window_count: Cell::new(0), drops_start: Cell::new(0), drops_count: Cell::new(0) }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -424,6 +519,8 @@ impl DurableObject for Mailbox {
             self.send(req).await
         } else if path.starts_with("/v1/ack/") {
             self.ack(req, &id).await
+        } else if path.starts_with("/v1/drops/") {
+            self.drops(req, &id).await
         } else {
             self.inbox(req, &id).await
         }
@@ -460,6 +557,7 @@ impl DurableObject for Mailbox {
         self.report(vec![]).await?;
         let now = now_ms();
         self.sql().exec("DELETE FROM msgs WHERE ts < ?", vec![(now - TTL_MS).into()])?;
+        self.sql().exec("DELETE FROM drops WHERE exp > 0 AND exp < ?", vec![now.into()])?;
         let left: Count = self.sql().exec("SELECT COUNT(*) AS n FROM msgs", None)?.one()?;
         let last_seen: i64 = self.meta("last_seen")?.and_then(|v| v.parse().ok()).unwrap_or(0);
         let online = !self.state.get_websockets_with_tag("owner").is_empty();

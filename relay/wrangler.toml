@@ -41,6 +41,13 @@ name = "RL_INBOX"
 namespace_id = "1002"
 simple = { limit = 10, period = 60 }
 
+# Drop-code table updates (signed by the mailbox key, checked in the mailbox): a bucket of their own, so they
+# never take from sends. The mailbox also allows at most 20 a minute.
+[[ratelimits]]
+name = "RL_DROPS"
+namespace_id = "1005"
+simple = { limit = 60, period = 60 }
+
 # Per mailbox: inbox logins (WSS connects and HTTPS polls), whatever the IPs. A live WebSocket needs one; a polling client
 # backs off to one per 2 minutes. Bounds what one mailbox can cost, whatever its IPs.
 [[ratelimits]]

@@ -7,9 +7,11 @@
 //
 //   seal <home> <to-address> [k=v ...]   envelope (base64url) on stdout. k: kind body from from_agent to_agent
 //                                        reply_to invite id ts_offset_ms sign_with=<home> to_id=<id> full=1
+//                                        drop drop_ok (the drop-code fields inside the envelope)
 //   post <address-with-drop> <envelope-file|-> [drop=<b64>] [ip=<ip>]   HTTP status and body
 //   login <home> [ts=<ms>] [drop_hash=<b64>] [host=<host>]               signed inbox query string
 //   ack <home> <seqs> [ts=<ms>]                                          signed ack query string
+//   drops <home> [n=<random codes>] [ts=<ms>] [sign_with=<home>] [ip=]   replace the drop-code table: status, body
 //   get <path> [ip=<ip>] [proto=http] [method=GET]                       status, headers, body
 //   ws <path> [ip=<ip>] [secs=3]                                         frames received (one per line)
 //   sock <socket> <json>                                                 one request on daemon.sock
@@ -99,6 +101,8 @@ switch (cmd) {
       ...(o.from_agent ? { from_agent: o.from_agent } : {}),
       ...(o.to_agent ? { to_agent: o.to_agent } : {}),
       ...(o.invite ? { invite: o.invite } : {}),
+      ...(o.drop ? { drop: o.drop } : {}),
+      ...(o.drop_ok ? { drop_ok: o.drop_ok } : {}),
       body: o.body ?? "",
     };
     process.stdout.write(b64(await seal(signer, to, inner, o.to_id)));
@@ -123,6 +127,17 @@ switch (cmd) {
     const me = await loadId(pos[0]);
     const ts = o.ts || String(Date.now());
     console.log(`/v1/ack/${me.id}?ts=${ts}&seqs=${args[1]}&sig=${await sign(me.sigKey, `letagents-ack-v1\n${HOST}\n${me.id}\n${ts}\n${args[1]}`)}`);
+    break;
+  }
+  case "drops": {
+    // The table keeps the owner's shared code, so its whoami address still works afterwards.
+    const me = await loadId(pos[0]);
+    const signer = o.sign_with ? await loadId(o.sign_with) : me;
+    const ts = o.ts || String(Date.now());
+    const drops = Array.from({ length: Number(o.n || 0) }, () => ({ h: b64(rand(32)), exp: 0 })).sort((a, b) => (a.h < b.h ? -1 : 1));
+    const body = JSON.stringify({ shared: b64(await sha256(me.drop)), drops });
+    const sig = await sign(signer.sigKey, `letagents-drops-v1\n${HOST}\n${me.id}\n${ts}\n${body}`);
+    await show(await fetch(`${RELAY}/v1/drops/${me.id}?ts=${ts}&sig=${sig}`, { method: "POST", headers: { "content-type": "application/json", ...headersOf(o) }, body }));
     break;
   }
   case "get": {

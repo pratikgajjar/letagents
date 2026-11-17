@@ -66,6 +66,12 @@ pub struct Contact {
     /// The one-time code from their invite; sent in our hello so they add us at once
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
+    /// The drop code we gave this contact (drops.rs). The relay holds only its SHA-256.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub our_drop: Option<String>,
+    /// It confirmed (`drop_ok`) that it writes to us with `our_drop`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub our_drop_ok: bool,
 }
 
 /// An invite code is valid this long, for one use.
@@ -74,7 +80,7 @@ pub const INVITE_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 /// invites.json: base64url(SHA-256(code)) -> expiry (ms). Only the hash is kept.
 type Invites = BTreeMap<String, i64>;
 
-fn invite_key(code: &str) -> String {
+pub fn invite_key(code: &str) -> String {
     b64(&sha256(&[code.trim().as_bytes()]))
 }
 
@@ -94,6 +100,17 @@ pub fn new_invite() -> Result<String> {
 /// Serializes read-modify-write of invites.json and contacts.json inside the daemon: two hellos that carry
 /// one code and arrive together must not both redeem it.
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read-modify-write contacts.json under the lock; `f` returns true when it changed something.
+pub fn update_contacts(f: impl FnOnce(&mut Contacts) -> bool) -> bool {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = contacts();
+    let changed = f(&mut all);
+    if changed {
+        let _ = write("contacts.json", &all);
+    }
+    changed
+}
 
 /// Use an invite code: true once if it exists and has not expired; it is deleted either way.
 pub fn redeem_invite(code: &str) -> bool {
@@ -116,7 +133,8 @@ pub fn split_invite(addr: &str) -> (String, Option<String>) {
 }
 
 /// Add the sender of a hello that carried a valid invite code. Name: its claimed name, made unique.
-pub fn accept_invited(sender: &Peer, claimed_name: &str) -> Result<String> {
+/// `our_drop`: the invite's drop code, which the joiner already writes with; it becomes this contact's code.
+pub fn accept_invited(sender: &Peer, claimed_name: &str, our_drop: Option<String>) -> Result<String> {
     let base: String = claimed_name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_".contains(*c)).take(32).collect();
     let base = if base.is_empty() { "agent".to_string() } else { base };
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,7 +146,8 @@ pub fn accept_invited(sender: &Peer, claimed_name: &str) -> Result<String> {
         n += 1;
     }
     let allow = RULE_KINDS.iter().map(|k| k.to_string()).collect();
-    all.insert(name.clone(), Contact { address: sender.address(true), allow, session: None, added: now_ms(), rules: vec![], invite: None });
+    let our_drop_ok = our_drop.is_some();
+    all.insert(name.clone(), Contact { address: sender.address(true), allow, session: None, added: now_ms(), rules: vec![], invite: None, our_drop, our_drop_ok });
     write("contacts.json", &all)?;
     Ok(name)
 }

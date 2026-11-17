@@ -2,6 +2,20 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 12. A drop code per contact; `remove` revokes it at the relay
+
+**Decision:** each machine gives each contact its own drop code. The relay keeps SHA-256 of each code (at most 64 per mailbox, sorted, no names) next to the shared code's hash; the owner replaces the table with a signed, newer-`ts` request. Codes travel only inside sealed messages (`drop`, until the contact confirms with `drop_ok`), in a hello's `from`, and in invites: every invite carries a code of its own, which becomes the joiner's code. `letagents remove <contact>` (`contact rm`) deletes the contact's code at the relay, so the relay refuses its sends with 404 and stores nothing.
+
+**Migration rule:** an existing contact gets its code on the next exchange (the daemon's `list` at start and every 10 minutes carries it), and confirms with `drop_ok` in its answer. The shared code stays valid while any contact has not confirmed (older versions never do), and for new contacts added by a bare `whoami` address. Removing a contact replaces the shared code (the removed contact may know it): at once if every remaining contact has its own code, else as soon as the last one confirms or is removed; `remove` names the contacts that hold it up.
+
+**Why not drop the shared code as soon as every contact has moved:** then a `whoami` address would stop working, a fresh machine (no contacts) would have no working bare address at all, and only invites could connect machines. Replacing it on removal gives the same protection against removed contacts and keeps `contact add <address>` working.
+
+**Cost:** the relay can now tell a mailbox's senders apart by the code they use (not who they are). A removed contact on an old version keeps the shared code until it is replaced. At most 64 codes (contacts plus open invites); past that, new contacts use the shared code and `invite` fails until one is freed.
+
+**Keep true:** the relay never gets a code in clear except as a send header, never a name, and never a mapping from code to contact. The table stays bounded. A code is handed out only after the relay holds it.
+
+**Revisit when:** a user needs more than 64 contacts per machine, sender linkability inside a mailbox matters (then: anonymous tokens, which need new crypto), or bare addresses are no longer needed (then: drop the shared code once every contact has moved).
+
 ## 11. Public stats: machines online and messages per hour, nothing else
 
 **Decision:** `/stats.json` and the home page show machines online now, sealed messages relayed per hour, and peak machines online per hour, for 30 days. The day and week tables of v0.5.0 are gone. A machine is a mailbox with an open WebSocket. Each online mailbox keeps the hour it last confirmed it (`live_h`); the Stats object keeps a count per such hour and sums the last 24 h. A mailbox confirms only on its own events (login, envelope, close, alarm) and in the same single Stats call it already makes. Stats answers are cached at the edge for 60 s.
@@ -86,7 +100,7 @@ Events must be emitted only after envelope decryption/signature verification, re
 
 **Why:** a mailbox has to exist somewhere when both agents are not online. Making the server unable to read anything is cheap; making it unable to drop mail is not.
 
-**Known metadata gaps:** the mailbox id is the long-term public key, so the relay can link a mailbox's traffic over time; the slot code is one token shared with all contacts. Next: a drop token per contact (revoke one contact without the others), then rotating mailbox ids.
+**Known metadata gaps:** the mailbox id is the long-term public key, so the relay can link a mailbox's traffic over time. The drop code was one token shared with all contacts; since #12 each contact has its own (revoke one contact without the others), which also lets the relay tell senders apart. Next: rotating mailbox ids.
 
 ## 3. Rules on the receiving machine, not in the relay or the model
 

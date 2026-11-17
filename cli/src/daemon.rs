@@ -23,7 +23,7 @@ use crate::codex;
 use crate::crypto::{now_ms, open, Identity, Inner, Peer};
 use crate::intercom::{frame, read_frame, stable_session_id, Local, Proxy};
 use crate::store::{self, Seen};
-use crate::{compose_and_send, relay};
+use crate::{compose_and_send, drops, relay};
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -631,10 +631,23 @@ async fn redeliver_loop(hub: Arc<Hub>) {
 
 // ---------- rosters and presence ----------
 
-/// Ask every contact who is online, now and every 10 minutes.
+/// Give contacts without a drop code their own and update the relay's table (drops.rs). `force`: send the
+/// table even if our last update matches (at start: the relay may have erased an idle mailbox).
+async fn refresh_drops(force: bool) {
+    drops::issue_missing();
+    match drops::sync(force).await {
+        Ok(true) => log("drop codes: relay table updated"),
+        Ok(false) => {}
+        Err(e) => log(format!("drop codes: relay update failed: {e}")),
+    }
+}
+
+/// Update drop codes, then ask every contact who is online (the asks carry new codes), now and every 10 minutes.
 async fn roster_loop(hub: Arc<Hub>) {
     tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut force = true;
     loop {
+        refresh_drops(std::mem::take(&mut force)).await;
         for contact in store::contacts().keys() {
             let _ = request_roster(&hub, contact).await;
         }
@@ -704,6 +717,18 @@ async fn relay_inbox(hub: Arc<Hub>) {
 
 async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     let from_agent = inner.from_agent.clone().unwrap_or_else(|| "agent".into());
+    // Drop codes first, for any kind from a known contact: its answer below already carries our confirmation.
+    if let Ok((contact, _)) = store::contact_of(&sender) {
+        let learned = drops::learn(&sender, &inner);
+        if learned.rotated {
+            log("drop codes: every contact has its own code; replaced the shared code");
+            tokio::spawn(refresh_drops(false));
+        }
+        // A new code from a message we do not answer: confirm it with a list (answered with a roster).
+        if learned.new_code && !matches!(inner.kind.as_str(), "list" | "send" | "ask") {
+            let _ = request_roster(&hub, &contact).await;
+        }
+    }
     match inner.kind.as_str() {
         "hello" => return hello(&hub, inner, sender).await,
         "receipt" | "roster" => {
@@ -917,9 +942,11 @@ async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
     }
     // A valid one-time invite code from our `letagents invite`: the human who shared it approved this contact.
     if inner.invite.as_deref().is_some_and(store::redeem_invite) {
-        let note = match store::accept_invited(&sender, &inner.body) {
+        let note = match store::accept_invited(&sender, &inner.body, inner.invite.as_deref().and_then(drops::take_invite)) {
             Ok(name) => {
                 log(format!("added contact {name} ({}) by invite code", sender.safety_number()));
+                // Its invite's drop code is now its own: no expiry at the relay any more.
+                refresh_drops(false).await;
                 connect_contact(hub, &name).await;
                 let _ = request_roster(hub, &name).await;
                 format!("[letagents] added contact {name} (safety number {}): it used your invite code. Remove it with: letagents contact rm {name}", sender.safety_number())
@@ -1148,13 +1175,15 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
         "status" => {
             let s = hub.spool.lock().unwrap();
             Ok(json!({
-                "ok": true, "name": hub.me.name, "address": hub.me.peer().address(true),
+                "ok": true, "name": hub.me.name, "address": store::identity().map(|i| i.peer().address(true)).unwrap_or_default(),
                 "safety": hub.me.peer().safety_number(), "notify": hub.notify,
                 "intercom": hub.system.read().unwrap().is_some(), "waiting": s.msgs.len(),
             }))
         }
         "reload" => {
-            // Contacts added by the CLI (join, contact add/accept): make them intercom sessions, ask who is online.
+            // Contacts added by the CLI (join, contact add/accept): give them drop codes, make them intercom
+            // sessions, ask who is online. A removal: the relay drops its code.
+            refresh_drops(false).await;
             for name in store::contacts().keys() {
                 if hub.proxy(name).is_none() {
                     connect_contact(hub, name).await;
