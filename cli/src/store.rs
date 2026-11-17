@@ -52,7 +52,7 @@ pub fn create_identity(name: &str) -> Result<Identity> {
 }
 
 /// A trusted peer and what it may do. Rules live only on this device.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Contact {
     pub address: String,
     pub allow: Vec<String>,
@@ -72,6 +72,120 @@ pub struct Contact {
     /// It confirmed (`drop_ok`) that it writes to us with `our_drop`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub our_drop_ok: bool,
+    /// The one local agent this contact is bound to (`--agent`): the daemon lets that agent write only to
+    /// this contact. Local only, never sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<Bind>,
+    /// The human's reminder about this contact (`--note`), shown in the label of its messages. Not a control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// A contact bound to one local agent. See docs/DECISIONS.md #13.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Bind {
+    pub agent: String,
+    /// Only the bound agent may write to this contact (other local agents are refused).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclusive: bool,
+}
+
+/// What `--agent`, `--exclusive` and `--note` ask for. Kept with an invite until the invite is used.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BindSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclusive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl BindSpec {
+    pub fn is_empty(&self) -> bool {
+        self.agent.is_none() && self.note.is_none()
+    }
+}
+
+/// The inbound rules of a bound contact: its agents may send, ask and reply to `agent`, nothing else
+/// (no other agent, no `list`).
+pub fn bind_rules(agent: &str) -> Vec<AgentRule> {
+    vec![
+        AgentRule { from: "*".into(), to: agent.into(), allow: vec!["send".into(), "ask".into(), "reply".into()] },
+        AgentRule { from: "*".into(), to: "*".into(), allow: vec![] },
+    ]
+}
+
+/// A note as shown in a label: one line, at most 120 characters.
+pub fn clean_note(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().chars().take(120).collect()
+}
+
+/// The contact a local agent is bound to, if any.
+pub fn bound_to(agent: &str, all: &Contacts) -> Option<(String, Bind)> {
+    all.iter().find_map(|(n, c)| c.bind.as_ref().filter(|b| b.agent == agent).map(|b| (n.clone(), b.clone())))
+}
+
+/// Can `agent` be bound to `contact` (None: a contact still to come, from an invite)?
+pub fn check_bind_agent(agent: &str, contact: Option<&str>, all: &Contacts) -> Result<()> {
+    let bad = agent.is_empty() || agent.len() > 80 || agent.contains(['/', '@', '*']) || agent.chars().any(char::is_control);
+    if bad || agent == "inbox" || agent == "letagents-daemon" || all.contains_key(agent) {
+        bail!("{agent:?} cannot be bound: use a plain local agent name (no / @ *, not a contact, not inbox)");
+    }
+    if let Some((other, _)) = bound_to(agent, all).filter(|(o, _)| Some(o.as_str()) != contact) {
+        bail!("{agent} is already bound to contact {other}: one agent serves one contact (letagents contact unbind {other})");
+    }
+    Ok(())
+}
+
+/// Bind contact `name` to a local agent (writes its inbound rules) and/or set its note.
+pub fn apply_bind(name: &str, spec: &BindSpec) -> Result<()> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = contacts();
+    if let Some(agent) = &spec.agent {
+        check_bind_agent(agent, Some(name), &all)?;
+    }
+    let c = all.get_mut(name).with_context(|| format!("no contact {name}"))?;
+    if let Some(agent) = &spec.agent {
+        c.rules = bind_rules(agent);
+        c.bind = Some(Bind { agent: agent.clone(), exclusive: spec.exclusive });
+    }
+    if let Some(note) = &spec.note {
+        let n = clean_note(note);
+        c.note = if n.is_empty() { None } else { Some(n) };
+    }
+    write("contacts.json", &all)
+}
+
+/// Undo a binding: the contact may reach every agent again (its allow list applies). Returns the agent.
+pub fn unbind(name: &str) -> Result<String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = contacts();
+    let c = all.get_mut(name).with_context(|| format!("no contact {name}"))?;
+    let b = c.bind.take().with_context(|| format!("contact {name} is not bound"))?;
+    if c.rules == bind_rules(&b.agent) {
+        c.rules.clear();
+    }
+    write("contacts.json", &all)?;
+    Ok(b.agent)
+}
+
+/// invite_binds.json: base64url(SHA-256(code)) -> the binding for whoever uses that invite.
+type InviteBinds = BTreeMap<String, BindSpec>;
+
+/// Keep a binding with an invite code; it is applied when the code is used.
+pub fn save_invite_bind(code: &str, spec: &BindSpec) -> Result<()> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let live: Invites = read("invites.json");
+    let mut all: InviteBinds = read("invite_binds.json");
+    all.retain(|k, _| live.contains_key(k));
+    all.insert(invite_key(code), spec.clone());
+    write("invite_binds.json", &all)
+}
+
+/// May this contact see our whole roster (presence)? Only if it may `list` and no machine-wide rule says no.
+pub fn may_see_roster(c: &Contact) -> bool {
+    c.allow.iter().any(|k| k == "list") && (c.rules.is_empty() || c.rules.iter().find(|r| r.to == "*").is_some_and(|r| r.from == "*" && r.allow.iter().any(|k| k == "list")))
 }
 
 /// An invite code is valid this long, for one use.
@@ -134,7 +248,9 @@ pub fn split_invite(addr: &str) -> (String, Option<String>) {
 
 /// Add the sender of a hello that carried a valid invite code. Name: its claimed name, made unique.
 /// `our_drop`: the invite's drop code, which the joiner already writes with; it becomes this contact's code.
-pub fn accept_invited(sender: &Peer, claimed_name: &str, our_drop: Option<String>) -> Result<String> {
+/// A binding kept with the invite (`invite --agent`) is applied in the same write, so no message can come
+/// in between. Returns the name and the bound agent.
+pub fn accept_invited(sender: &Peer, claimed_name: &str, our_drop: Option<String>, code: &str) -> Result<(String, Option<String>)> {
     let base: String = claimed_name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_".contains(*c)).take(32).collect();
     let base = if base.is_empty() { "agent".to_string() } else { base };
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -147,13 +263,30 @@ pub fn accept_invited(sender: &Peer, claimed_name: &str, our_drop: Option<String
     }
     let allow = RULE_KINDS.iter().map(|k| k.to_string()).collect();
     let our_drop_ok = our_drop.is_some();
-    all.insert(name.clone(), Contact { address: sender.address(true), allow, session: None, added: now_ms(), rules: vec![], invite: None, our_drop, our_drop_ok });
+    let mut c = Contact { address: sender.address(true), allow, added: now_ms(), our_drop, our_drop_ok, ..Default::default() };
+    let mut binds: InviteBinds = read("invite_binds.json");
+    let mut bound = None;
+    if let Some(spec) = binds.remove(&invite_key(code)) {
+        let _ = write("invite_binds.json", &binds);
+        c.note = spec.note.as_deref().map(clean_note).filter(|n| !n.is_empty());
+        if let Some(agent) = spec.agent {
+            if bound_to(&agent, &all).is_some() || all.contains_key(&agent) {
+                // The agent was bound to someone else since the invite was made: fail closed, reach no one.
+                c.rules = vec![AgentRule { from: "*".into(), to: "*".into(), allow: vec![] }];
+            } else {
+                c.rules = bind_rules(&agent);
+                c.bind = Some(Bind { agent: agent.clone(), exclusive: spec.exclusive });
+                bound = Some(agent);
+            }
+        }
+    }
+    all.insert(name.clone(), c);
     write("contacts.json", &all)?;
-    Ok(name)
+    Ok((name, bound))
 }
 
 /// A rule for one pair of agents. `*` matches any name; `prefix*` matches by prefix.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AgentRule {
     pub from: String,
     pub to: String,
@@ -203,6 +336,16 @@ pub fn authorize(sender: &Peer, kind: &str, from: &str, to: &str) -> std::result
             Some(_) => return Err(format!("rule: {name}/{from} may not {kind} {to}")),
             None => return Err(format!("no rule matches {name}/{from} -> {to}")),
         }
+    }
+    Ok((name, c))
+}
+
+/// A reply to an ask that our agent sent to this same contact: the ask invited it, so per-agent rules do not
+/// apply to it (the contact's allow list does). The reply goes only to the agent that asked.
+pub fn authorize_answer(sender: &Peer) -> std::result::Result<(String, Contact), String> {
+    let (name, c) = contact_of(sender)?;
+    if !c.allow.iter().any(|k| k == "reply") {
+        return Err(format!("contact {name} is not allowed to reply"));
     }
     Ok((name, c))
 }

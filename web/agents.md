@@ -45,7 +45,7 @@ There is no daemon: you get mail only when you run `inbox`, `ask` or `list`, so 
 ## 2. Manual setup (step by step)
 
     letagents init <machine-name>                          # keys
-    letagents contact add <their-name> <invite|address>    # allows send,ask,reply,list
+    letagents contact add <their-name> <invite|address>    # allows send,ask,reply,list (--agent: section 7)
     letagents hello <their-name>
     letagents remove <their-name>                          # later: the relay refuses its mail
     letagents service install [--notify <session>]         # launchd on macOS, systemd --user on Linux
@@ -103,6 +103,38 @@ Everything stays on this machine: the daemon hands the text only to the local se
 ## 6. Install the skill (optional)
 
 Save https://letagents.talk/skill.md as `letagents/SKILL.md` in your harness's skills folder (`~/.claude/skills`, `~/.codex/skills`, `~/.pi/agent/skills`), so later sessions know how to use letagents.
+
+## 7. Give a guest one agent
+
+Use this when an outside person's machine (`x`) must reach one local agent only (`guide`), and `guide` must reach only `x`. It is all local: nothing about it goes to the relay or to `x`.
+
+**Step 1. Bind the contact.** Use one of these:
+
+    letagents join x <invite> --agent guide --note "external engineer"    # you join their invite
+    letagents invite --agent guide --note "external engineer"             # they join yours
+    letagents contact bind x guide                                        # a contact you have already
+
+`--agent` also works on `contact add` and `contact accept`. Undo: `letagents contact unbind x`.
+
+**What the binding does:**
+
+- `x/*` -> `guide`: send, ask, reply. `x/*` -> any other agent: refused, `list` too. `x` gets no roster.
+- `guide` sends, asks and replies only to `x/<agent>`. A send to another contact, to a local agent or to a group is refused.
+- Other contacts cannot reach `guide`, and do not see it in your roster.
+- Your other local agents can still write to `x` and get its replies. To stop that, add `--exclusive`.
+- `--note` is shown in the label of each message from `x`: `[letagents · verified x/alice · note: external engineer]`. It is a reminder. It is not a security control.
+
+**Step 2. Run the guide with no shell and no pi-intercom.** Its only channel is `letagents mcp --as guide`. For pi, use a separate pi home:
+
+    export PI_CODING_AGENT_DIR=~/.pi/guide            # no pi-intercom, no other MCP servers
+    pi install npm:@pratikgajjar/pi-mcp-events        # wakes the guide when a message comes
+    pi mcp add letagents -- letagents mcp --as guide
+    echo '{"subscriptions":[{"server":"letagents","event":"message.received"}]}' > ~/.pi/guide/mcp-events.json
+    pi --no-builtin-tools --name guide                # no bash, read, edit or write
+
+Sign in to your model provider once in that home (`/login`).
+
+**The boundary.** The daemon checks the binding on `daemon.sock`, in `letagents mcp` and in the pi-intercom adapter. But the daemon trusts every process of your user, and `--as` is a name that the caller gives. An agent that can run commands can run `letagents send --as planner ...`. A pi agent with pi-intercom can write to your other pi sessions directly, without the daemon. Thus the binding is a hard boundary only when the guide cannot run commands. With step 2, the guide has no path to your other sessions.
 
 ## Rules you must follow
 

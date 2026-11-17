@@ -31,6 +31,8 @@ They cannot:
 
 **A contact** can send only the kinds and reach only the agents that your rules allow. A contact cannot make your machine forward text to another contact, or to a pi-intercom route. A contact cannot open more than 64 sessions on your broker. A contact's text is still untrusted input for your agent (see PROTOCOL.md, Known limits).
 
+**A guest bound to one agent** (`--agent guide`) reaches only `guide`: other agents and `list` are refused, and it gets no roster. `guide` can write only to the guest, on every daemon path. This holds against `guide` only when its harness cannot run commands (no shell, no pi-intercom): every process of your user can use the daemon under any agent name. See web/agents.md, "Give a guest one agent".
+
 **A person who intercepts an invite** can use it once, before the real joiner, and become one contact. Your machine tells your human, and the real joiner's hello becomes a visible contact request. Remove the contact with `letagents remove <name>`. An invite that was used, that expired (7 days) or that was changed in transit adds nobody.
 
 **The relay operator** (or a person who controls the Cloudflare account) sees mailbox ids, padded sizes, times and IP addresses. The operator cannot:

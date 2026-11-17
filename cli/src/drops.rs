@@ -286,7 +286,7 @@ mod tests {
         let (a, b) = (Identity::generate("a"), Identity::generate("b"));
         store::write("identity.json", &a).unwrap();
         let mut all = Contacts::new();
-        all.insert("b".into(), Contact { address: b.peer().address(true), allow: vec![], session: None, added: 0, rules: vec![], invite: None, our_drop: None, our_drop_ok: false });
+        all.insert("b".into(), Contact { address: b.peer().address(true), allow: vec![], session: None, added: 0, rules: vec![], invite: None, our_drop: None, our_drop_ok: false, ..Default::default() });
         store::write("contacts.json", &all).unwrap();
         assert!(issue_missing());
         assert!(!issue_missing());

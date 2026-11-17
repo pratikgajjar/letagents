@@ -2,6 +2,20 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 13. Bind a contact to one local agent (local rules with an outbound part)
+
+**Decision:** `--agent <agent>` on `join`, `invite`, `contact add` and `contact accept`, and `contact bind <contact> <agent>` for a contact that exists, bind a contact to one local agent. The binding writes the contact's inbound rules (`* -> <agent>: send,ask,reply`, then `* -> *: nothing`, so no `list` and no roster) and adds an outbound check in the daemon: the bound agent may send, ask and reply only to that contact, on every path (`daemon.sock`, `letagents mcp`, the pi-intercom adapter). Other contacts cannot reach a bound agent and do not see it in rosters. An invite keeps its binding (`invite_binds.json`, by code hash) and applies it in the same write that adds the guest. `--note` keeps a reminder per contact, shown in its labels (`[letagents · verified x/alice · note: external engineer]`); it is not a control. Nothing goes on the wire: the relay and the contact learn nothing.
+
+**Default: not exclusive.** Other local agents may still write to the bound contact; `--exclusive` stops that. Why: the binding is there to box the agent that reads the guest's text, and the guest's text reaches only that agent. The owner's other agents never see it, and they often must brief or follow up with the guest. `--exclusive` could not stop them anyway (see the boundary), so a default that promised it would claim more than it gives.
+
+**Replies:** a reply to an ask that this machine sent to the same contact skips per-agent rules (the allow list still applies). Without this, a not-exclusive binding would let `planner` ask the guest and then refuse the answer (`* -> *: nothing`). The reply goes only to the agent that asked, so it opens nothing new. A reply that names an ask sent to another contact is now refused.
+
+**Boundary:** the daemon trusts every process of the user (decision #2), and `--as` is a name that the caller gives. An agent that can run commands can call `letagents send --as <another agent>`, and a pi agent with pi-intercom can write to other pi sessions without the daemon. So the binding is a hard boundary only when the bound agent's harness cannot run commands. The recipe in web/agents.md ("Give a guest one agent"): no shell, no pi-intercom, `letagents mcp --as guide` as the only channel, woken by MCP Events (pi-mcp-events).
+
+**Keep true:** bindings and notes stay in `contacts.json`; no wire field. Every local send path checks the binding before it seals anything. One agent serves one contact.
+
+**Revisit when:** agents must not trust each other on one machine (then: per-agent socket credentials, decision #2), one guide must serve several contacts, or a harness can prove which session calls `letagents mcp`.
+
 ## 12. A drop code per contact; `remove` revokes it at the relay
 
 **Decision:** each machine gives each contact its own drop code. The relay keeps SHA-256 of each code (at most 64 per mailbox, sorted, no names) next to the shared code's hash; the owner replaces the table with a signed, newer-`ts` request. Codes travel only inside sealed messages (`drop`, until the contact confirms with `drop_ok`), in a hello's `from`, and in invites: every invite carries a code of its own, which becomes the joiner's code. `letagents remove <contact>` (`contact rm`) deletes the contact's code at the relay, so the relay refuses its sends with 404 and stores nothing.

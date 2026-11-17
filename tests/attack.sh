@@ -8,7 +8,8 @@
 #   LETAGENTS_BIN=path PI_INTERCOM_DIR=path tests/attack.sh
 #
 # Machines: alice (pi-intercom broker, sessions planner and vault), bob (alice's contact), carol (alice's
-# contact; bob does not know her), dana (no daemon), ivy (an inviter), mallory (the attacker: she knows
+# contact; bob does not know her), dana (no daemon), ivy (an inviter), xg and yg (guests, each bound to one of
+# alice's agents), mallory (the attacker: she knows
 # alice's full address, so she can drop mail; she has no contact key). Needs: cargo, node 22+, python3, curl,
 # worker-build, git.
 set -u
@@ -463,6 +464,137 @@ check "G5 mallory replaces dana's table: bad signature ($out)" grep -q '^401 .*b
 ts=$(($(date +%s) * 1000 - 60000))
 out=$(node "$AT" drops dana n=1 ts=$ts ip=10.1.7.12)
 check "G5 a table update older than the last one: replayed ($out)" grep -q '^401 .*replayed' <<<"$out"
+
+# ---------- H. a guest bound to one local agent ----------
+# xg is an external person's machine. alice joins xg's invite with --agent guide: xg may reach only alice's
+# guide, and guide may write only to xg. Paths: daemon.sock (CLI), `letagents mcp`, the pi-intercom adapter.
+la xg init xg >/dev/null || die "init xg"
+start_daemon xg
+wait_for 30 grep -q "inbox: connected" "$T/xg.log" || die "xg daemon did not connect"
+I=$(la xg invite --no-service 2>/dev/null | sed -n 's/^address: *//p')
+la alice join xg "$I" --agent guide --note "external engineer" --no-service >/dev/null 2>&1
+check "H1 join --agent guide --note: bound in one step" python3 -c '
+import json, sys
+c = json.load(open(sys.argv[1]))["xg"]
+assert c["bind"] == {"agent": "guide"}, c
+assert c["note"] == "external engineer", c
+assert c["rules"] == [{"from": "*", "to": "guide", "allow": ["send", "ask", "reply"]}, {"from": "*", "to": "*", "allow": []}], c["rules"]' "$T/alice/contacts.json"
+wait_for 20 bash -c "LETAGENTS_HOME='$T/xg' '$BIN' contact ls | grep -q '^alice '" || die "xg did not add alice"
+node "$AT" watch "$T/alice/daemon.sock" guide 600 >"$T/guide.out" 2>&1 &
+PIDS+=($!)
+sleep 1
+X=$(mark guest)
+out=$(la xg send alice/guide "$X" --as eng 2>&1)
+check "H2 xg -> alice/guide: pushed ($out)" grep -q "pushed" <<<"$out"
+check "H2 guide got it, labelled with the note" wait_for 10 grep -qF "verified xg/eng · note: external engineer]" "$T/guide.out"
+for t in planner vault; do
+  out=$(la xg send "alice/$t" "$X-$t" --as eng 2>&1)
+  check "H3 xg -> alice/$t: refused ($out)" grep -q "refused rule: xg/eng may not send $t" <<<"$out"
+done
+check "H3 planner and vault got nothing from xg" bash -c "sleep 1; ! grep -q '$X' '$T/pi-planner.out' '$T/pi-vault.out'"
+out=$(la xg list alice 2>&1)
+check "H4 xg lists alice: refused, no agent names" bash -c "! grep -q 'alice/' <<<\"\$0\" && grep -q 'REFUSED list .*rule: xg/agent may not list' '$T/alice.log'" "$out"
+check "H4 xg never got alice's roster (no presence either)" bash -c "! grep -q 'roster from alice' '$T/xg.log'"
+# guide answers xg's ask: the reply path is open for the bound pair.
+Q=$(mark q)
+la xg ask alice/guide "$Q" --as eng --timeout 30 >"$T/h-ask.out" 2>&1 &
+ASKP=$!
+wait_for 15 grep -q "$Q" "$T/guide.out"
+QID=$(python3 -c 'import json,sys; print(next(json.loads(l)["push"]["id"] for l in open(sys.argv[1]) if sys.argv[2] in l))' "$T/guide.out" "$Q" 2>/dev/null)
+la alice reply "$QID" "ANS-$Q" --as guide >/dev/null 2>&1
+wait "$ASKP"
+check "H5 guide replies to xg's ask: xg gets the answer" grep -q "ANS-$Q" "$T/h-ask.out"
+out=$(la alice send xg/eng "$(mark toguest)" --as guide 2>&1)
+check "H6 guide -> xg/eng: sent ($out)" bash -c '! grep -qi "refused\|error" <<<"$0" && grep -q "queued\|pushed" <<<"$0"' "$out"
+X=$(mark bound)
+out=$(la alice send bobmach/worker "$X" --as guide 2>&1)
+check "H7 guide -> bobmach/worker (another contact): refused ($out)" grep -q "guide is bound to contact xg: it may write only to xg/<agent>, not to contact bobmach" <<<"$out"
+for t in planner alice/planner; do
+  out=$(la alice send "$t" "$X" --as guide 2>&1)
+  check "H8 guide -> $t (local): refused ($out)" grep -q "guide is bound to contact xg: .*not to agents on this machine" <<<"$out"
+done
+cat >"$T/mcp-guide.in" <<EOF
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"guest-guide","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"letagents_list","arguments":{}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"letagents_send","arguments":{"to":"bobmach/worker","text":"$X"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"letagents_send","arguments":{"to":"planner","text":"$X"}}}
+EOF
+LETAGENTS_HOME="$T/alice" PI_CODING_AGENT_DIR="$T/pi" node "$AT" mcp "$BIN" "$T/mcp-guide.in" guide >"$T/mcp-guide.out" 2>&1
+check "H9 MCP as guide: sends to bobmach and to a local agent are refused" python3 -c '
+import json, sys
+r = {m.get("id"): m for m in map(json.loads, filter(lambda l: l.strip().startswith("{"), open(sys.argv[1])))}
+for i in (2, 3):
+    assert r[i]["result"]["isError"] and "guide is bound to contact xg" in json.dumps(r[i]), r[i]' "$T/mcp-guide.out"
+check "H9 MCP as guide: list shows no local agent and no other contact" python3 -c '
+import json, sys
+r = {m.get("id"): m for m in map(json.loads, filter(lambda l: l.strip().startswith("{"), open(sys.argv[1])))}
+t = json.loads(r[4]["result"]["content"][0]["text"])
+assert t["local"] == [] and t["groups"] == [] and all(a["address"].startswith("xg/") for a in t["remote"]), t' "$T/mcp-guide.out"
+node "$AT" pi "$BROKER" guide 4 "send:bobmach:$X" >"$T/pi-guide.out" 2>&1
+check "H10 pi session guide -> bobmach through the intercom adapter: refused" grep -q "refused: guide is bound to contact xg" "$T/pi-guide.out"
+P=$(mark pi)
+node "$AT" pi "$BROKER" guide 4 "send:xg:to: eng
+$P" >/dev/null 2>&1
+check "H10 pi session guide -> xg through the adapter: sealed and sent" wait_for 10 grep -q "in send from alice/guide -> eng" "$T/xg.log"
+sleep 1
+check "H7-10 bob got nothing from guide" bash -c "! grep -q 'from alicemach/guide' '$T/bob.log'"
+check "H7-10 planner got nothing from guide" bash -c "! grep -q '$X' '$T/pi-planner.out'"
+X=$(mark other)
+out=$(la bob send alicemach/guide "$X" --as worker 2>&1)
+check "H11 another contact (bob) -> alice/guide: refused ($out)" grep -q "refused guide takes messages from one contact only" <<<"$out"
+check "H11 guide got nothing from bob" bash -c "sleep 1; ! grep -q '$X' '$T/guide.out'"
+node "$AT" seal "$T/xg" "$(addr alice)" kind=reply reply_to=00000000-0000-4000-8000-000000000000 from_agent=eng body="$X" >"$T/h.env"
+node "$AT" post "$(addr alice)" "$T/h.env" ip=10.1.8.1 >/dev/null
+check "H12 xg sends a reply to no ask of ours: refused by its rules" wait_for 10 grep -q "REFUSED reply .* rule: xg/eng may not reply" "$T/alice.log"
+# Default (not exclusive): another local agent may still write to xg and get its answer.
+out=$(la alice send xg/eng "$(mark planner)" --as planner 2>&1)
+check "H13 default: planner -> xg/eng is not refused ($out)" bash -c '! grep -qi "refused\|error" <<<"$0"' "$out"
+Q=$(mark q2)
+la alice ask xg/eng "$Q" --as planner --timeout 40 >"$T/h-ask2.out" 2>&1 &
+ASKP=$!
+QID=""
+for _ in $(seq 30); do
+  QID=$(la xg inbox --as eng 2>/dev/null | python3 -c 'import json,sys; print(next((m["id"] for m in map(json.loads, sys.stdin) if sys.argv[1] in m["text"]), ""))' "$Q")
+  [ -n "$QID" ] && break
+  sleep 0.5
+done
+la xg reply "$QID" "ANS-$Q" --as eng >/dev/null 2>&1
+wait "$ASKP"
+check "H13 default: planner asks xg and gets the answer (a reply to our own ask)" grep -q "ANS-$Q" "$T/h-ask2.out"
+# --exclusive on an existing contact: only guide may write to xg.
+out=$(la alice contact bind xg guide --exclusive --note "external engineer" 2>&1)
+check "H14 contact bind xg guide --exclusive" grep -q "only guide may write to xg (exclusive)" <<<"$out"
+out=$(la alice send xg/eng "$(mark ex)" --as planner 2>&1)
+check "H14 exclusive: planner -> xg/eng refused ($out)" grep -q "contact xg is bound to guide only (exclusive)" <<<"$out"
+out=$(la alice send xg/eng "$(mark ex)" 2>&1)
+check "H14 exclusive: the plain CLI (machine inbox) -> xg refused" grep -q "exclusive" <<<"$out"
+out=$(la alice invite --no-service --agent guide 2>&1)
+check "H15 invite --agent guide while guide serves xg: refused" grep -q "already bound to contact xg" <<<"$out"
+# The binding is in contacts.json: a restarted daemon enforces it at once.
+kill "$ALICE" 2>/dev/null; wait "$ALICE" 2>/dev/null
+start_daemon alice; ALICE=$LAST
+wait_for 30 logged "$T/alice.log" "inbox: connected" -ge 3 || die "alice did not reconnect"
+node "$AT" watch "$T/alice/daemon.sock" guide 300 >"$T/guide2.out" 2>&1 &
+PIDS+=($!)
+sleep 2
+X=$(mark restart)
+out=$(la xg send alice/planner "$X" --as eng 2>&1)
+check "H16 after a restart: xg -> planner refused ($out)" grep -q "refused rule: xg/eng may not send planner" <<<"$out"
+out=$(la xg send alice/guide "$X" --as eng 2>&1)
+check "H16 after a restart: xg -> guide pushed ($out)" grep -q "pushed" <<<"$out"
+out=$(la alice send bobmach/worker "$X" --as guide 2>&1)
+check "H16 after a restart: guide -> bobmach refused" grep -q "guide is bound to contact xg" <<<"$out"
+out=$(la alice send xg/eng "$X" --as planner 2>&1)
+check "H16 after a restart: planner -> xg refused (exclusive)" grep -q "exclusive" <<<"$out"
+# invite --agent: the binding waits with the invite and is applied in the same write that adds the guest.
+I=$(la alice invite --no-service --agent helper --note "visitor" 2>/dev/null | sed -n 's/^address: *//p')
+la yg join alice "$I" --me yg --no-service >/dev/null 2>&1
+check "H17 invite --agent helper: the guest that uses it is bound on arrival" wait_for 15 python3 -c '
+import json, sys
+c = json.load(open(sys.argv[1]))["yg"]
+assert c["bind"] == {"agent": "helper"} and c["note"] == "visitor" and c["rules"][0]["to"] == "helper" and c["rules"][1]["allow"] == [], c' "$T/alice/contacts.json"
+check "H18 wire: no binding, agent name or note left alice's machine" bash -c "! grep -aqE 'external engineer|visitor|guide|helper' '$T/wire.bin'"
 
 # ---------- A. last: a flood of one mailbox is cut at 60 a minute ----------
 codes=$(for i in $(seq 1 64); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "cf-connecting-ip: 10.3.$i.1" -H "x-la-drop: $DROP" --data-binary @"$T/ok.env" "$RELAY/v1/send/$D_ID"; done | sort | uniq -c | tr -s ' ' | tr '\n' ',')

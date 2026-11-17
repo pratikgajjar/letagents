@@ -68,6 +68,29 @@ fn own_session(hub: &Hub, id: &str) -> bool {
     hub.system.read().unwrap().as_ref().is_some_and(|p| p.session_id == id) || hub.proxies.read().unwrap().values().any(|p| p.session_id == id)
 }
 
+/// The binding check for every message a local agent writes (socket, MCP server, pi-intercom adapter).
+/// `to`: the contact it goes to, or None for an agent on this machine. A bound agent writes only to its
+/// contact; an exclusive contact takes messages only from its bound agent. Err: the reason, for the sender.
+fn may_write(all: &store::Contacts, me_as: &str, to: Option<&str>) -> std::result::Result<(), String> {
+    if let Some((c, _)) = store::bound_to(me_as, all) {
+        if to != Some(c.as_str()) {
+            let what = to.map(|t| format!("contact {t}")).unwrap_or_else(|| "agents on this machine".into());
+            return Err(format!("{me_as} is bound to contact {c}: it may write only to {c}/<agent>, not to {what}"));
+        }
+    }
+    if let Some(t) = to {
+        if let Some(b) = all.get(t).and_then(|c| c.bind.as_ref()).filter(|b| b.exclusive && b.agent != me_as) {
+            return Err(format!("contact {t} is bound to {} only (exclusive): other agents may not write to it", b.agent));
+        }
+    }
+    Ok(())
+}
+
+/// The roster a contact may see: agents bound to another contact are left out.
+fn roster_for(roster: &[Agent], contact: &str, all: &store::Contacts) -> Vec<Agent> {
+    roster.iter().filter(|a| store::bound_to(&a.name, all).is_none_or(|(c, _)| c == contact)).cloned().collect()
+}
+
 pub fn socket_path() -> PathBuf {
     store::home().join("daemon.sock")
 }
@@ -108,6 +131,9 @@ struct Asker {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     proxy: Option<String>,
     ts: i64,
+    /// The contact it was sent to (None: a local ask, or recorded by a version before 0.6.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contact: Option<String>,
 }
 
 /// One agent on some machine, as shared in a roster.
@@ -134,11 +160,27 @@ struct Push {
     done: oneshot::Sender<bool>,
 }
 
+/// The label that names the sender: `[letagents · verified <machine>/<agent> · note: <note>]`. `verified`
+/// marks another machine (its key signed it); the note is the human's own reminder about that contact.
+fn label(from: &str, verified: bool, note: Option<&str>) -> String {
+    let v = if verified { "verified " } else { "" };
+    match note {
+        Some(n) => format!("[letagents · {v}{from} · note: {n}]"),
+        None => format!("[letagents · {v}{from}]"),
+    }
+}
+
+/// The note kept for the contact of a remote address (`<contact>/<agent>` or `<contact>`).
+fn note_of(from: &str) -> Option<String> {
+    let contact = from.split('/').next()?;
+    store::contacts().get(contact)?.note.clone()
+}
+
 /// The text an agent sees for a message: a short header naming the sender once, then the body.
 /// The MCP tool descriptions say how to answer.
-fn render(m: &Spooled, machine: &str) -> String {
+fn render(m: &Spooled, machine: &str, note: Option<&str>) -> String {
     let local = m.from.starts_with(&format!("{machine}/"));
-    let who = if local { format!("[letagents · {}]", m.from) } else { format!("[letagents · verified {}]", m.from) };
+    let who = label(&m.from, !local, if local { None } else { note });
     match m.kind.as_str() {
         "ask" => format!("{who} ASK {}\n\n{}", m.id, m.text),
         "reply" => format!("{who} REPLY {}\n\n{}", m.reply_to.as_deref().unwrap_or("?"), m.text),
@@ -256,7 +298,7 @@ impl Hub {
     /// Push into the target's session: through its watching MCP server (Claude Code), or as a new turn on
     /// its open Codex thread. Never logs the text.
     async fn push(&self, m: &Spooled) -> bool {
-        let text = render(m, &self.me.name);
+        let text = render(m, &self.me.name, note_of(&m.from).as_deref());
         let tx = self.watchers.lock().unwrap().get(&m.target).cloned();
         if let Some(tx) = tx {
             let (done, rx) = oneshot::channel();
@@ -304,11 +346,11 @@ impl Hub {
     }
 
     /// Remember who sent ask `id`, so its reply finds them after a timeout or a restart.
-    fn record_ask(&self, id: &str, agent: &str, proxy: Option<&str>) {
+    fn record_ask(&self, id: &str, agent: &str, proxy: Option<&str>, contact: Option<&str>) {
         let mut s = self.spool.lock().unwrap();
         let cut = now_ms() - crate::crypto::MAX_AGE_MS;
         s.asks.retain(|_, a| a.ts >= cut);
-        s.asks.insert(id.to_string(), Asker { agent: agent.to_string(), proxy: proxy.map(str::to_string), ts: now_ms() });
+        s.asks.insert(id.to_string(), Asker { agent: agent.to_string(), proxy: proxy.map(str::to_string), ts: now_ms(), contact: contact.map(str::to_string) });
         self.save_spool(&s);
     }
 
@@ -536,6 +578,14 @@ async fn from_intercom(hub: &Hub, m: Local) {
         let ask = m.reply_to.as_ref().and_then(|r| hub.local_ask_by_intercom.lock().unwrap().remove(r));
         if let Some(ask_id) = ask {
             let from = if m.from_name.is_empty() { m.from_id.clone() } else { m.from_name.clone() };
+            if let Err(e) = may_write(&store::contacts(), &from, None) {
+                log(format!("REFUSED local reply from {from} (intercom): bound"));
+                let system = hub.system.read().unwrap().clone();
+                if let Some(sys) = system {
+                    let _ = sys.send(&m.from_id, &format!("[letagents] refused: {e}"), None, false).await;
+                }
+                return;
+            }
             let waiter = hub.waiters.lock().unwrap().remove(&ask_id);
             let reply = Spooled { id: uuid::Uuid::new_v4().to_string(), from: agent_addr(&from, &hub.me.name), kind: "reply".into(), target: MACHINE_INBOX.into(), text: m.text, ts: now_ms(), reply_to: Some(ask_id) };
             resolve_waiter(hub, waiter, reply).await;
@@ -543,6 +593,16 @@ async fn from_intercom(hub: &Hub, m: Local) {
         return;
     }
     let from_agent = if m.from_name.is_empty() { m.from_id.clone() } else { m.from_name.clone() };
+    // The binding check, before anything is sealed: the contact this goes to is the proxy's machine.
+    let to_contact = m.proxy.split('/').next().unwrap_or_default().to_string();
+    let link_contact = m.reply_to.as_ref().and_then(|r| hub.remote_ask_by_local.lock().unwrap().get(r).map(|x| x.0.clone()));
+    if let Err(e) = may_write(&store::contacts(), &from_agent, Some(link_contact.as_deref().unwrap_or(&to_contact))) {
+        log(format!("REFUSED out from {from_agent} via intercom -> {}: bound", m.proxy));
+        if let Some(p) = hub.proxy(&m.proxy) {
+            let _ = p.send(&m.from_id, &format!("[letagents] refused: {e}"), None, false).await;
+        }
+        return;
+    }
     let link = m.reply_to.as_ref().and_then(|r| hub.remote_ask_by_local.lock().unwrap().remove(r));
     if let Some((contact, remote_id)) = link {
         return match hub.seal_send(&contact, "reply", &m.text, Some(remote_id), Some(from_agent), None).await {
@@ -569,7 +629,7 @@ async fn from_intercom(hub: &Hub, m: Local) {
     match hub.seal_send(&contact, kind, &body, None, Some(from_agent), to_agent).await {
         Ok(id) => {
             if kind == "ask" {
-                hub.record_ask(&id, &m.from_id, Some(&m.proxy));
+                hub.record_ask(&id, &m.from_id, Some(&m.proxy), Some(&contact));
                 hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Intercom { proxy: m.proxy.clone(), local_from: m.from_id.clone(), local_msg: m.id.clone() });
             }
             hub.receipts.lock().unwrap().insert(id, ReceiptWaiter::Intercom { proxy: m.proxy.clone(), local_from: m.from_id.clone(), to: dest.clone() });
@@ -671,10 +731,11 @@ async fn presence_loop(hub: Arc<Hub>) {
             continue;
         }
         last = Some(key);
-        let body = serde_json::to_string(&roster).unwrap_or_default();
-        for (name, c) in store::contacts() {
-            if c.allow.iter().any(|k| k == "list") {
-                if let Err(e) = hub.seal_send(&name, "roster", &body, None, None, None).await {
+        let all = store::contacts();
+        for (name, c) in &all {
+            if store::may_see_roster(c) {
+                let body = serde_json::to_string(&roster_for(&roster, name, &all)).unwrap_or_default();
+                if let Err(e) = hub.seal_send(name, "roster", &body, None, None, None).await {
                     log(format!("presence -> {name} failed: {e}"));
                 }
             }
@@ -747,6 +808,14 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
                 }
                 return;
             }
+            // An agent bound to one contact takes messages from that contact only.
+            Some(t) if store::contact_of(&sender).is_ok_and(|(c, _)| store::bound_to(&t, &store::contacts()).is_some_and(|(b, _)| b != c)) => {
+                if let Ok((contact, _)) = store::contact_of(&sender) {
+                    log(format!("REFUSED {} {} from {contact}/{from_agent}: {t} is bound to another contact", inner.kind, inner.id));
+                    hub.receipt(&contact, &inner.id, "refused", &format!("{t} takes messages from one contact only")).await;
+                }
+                return;
+            }
             Some(t) => t,
             None => {
                 // No agent named and no conversation to continue: never guess a session.
@@ -759,7 +828,21 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
             }
         },
     };
-    let (contact, _) = match store::authorize(&sender, &inner.kind, &from_agent, &to_local) {
+    // A reply to an ask we sent: only from the contact we asked. Then the ask invited it, and per-agent rules
+    // do not apply (it goes only to the agent that asked).
+    let mut answer = false;
+    if inner.kind == "reply" {
+        let asked = inner.reply_to.as_ref().and_then(|r| hub.spool.lock().unwrap().asks.get(r).and_then(|a| a.contact.clone()));
+        if let (Some(asked), Ok((contact, _))) = (asked, store::contact_of(&sender)) {
+            if asked != contact {
+                log(format!("REFUSED reply {} from {contact}/{from_agent}: that ask went to another contact", inner.id));
+                return hub.receipt(&contact, &inner.id, "refused", "no open ask with that id").await;
+            }
+            answer = true;
+        }
+    }
+    let authorized = if answer { store::authorize_answer(&sender) } else { store::authorize(&sender, &inner.kind, &from_agent, &to_local) };
+    let (contact, _) = match authorized {
         Ok(x) => x,
         Err(reason) => {
             log(format!("REFUSED {} {} from {from_agent}: {reason}", inner.kind, inner.id));
@@ -772,7 +855,7 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     let from_addr = agent_addr(&from_agent, &contact);
     match inner.kind.as_str() {
         "list" => {
-            let roster = hub.local_roster().await;
+            let roster = roster_for(&hub.local_roster().await, &contact, &store::contacts());
             let body = serde_json::to_string(&roster).unwrap_or_default();
             match hub.seal_send(&contact, "roster", &body, Some(inner.id.clone()), None, None).await {
                 Ok(_) => log(format!("roster -> {contact} ({} agents)", roster.len())),
@@ -805,11 +888,8 @@ async fn deliver(hub: &Arc<Hub>, contact: &str, from_agent: &str, from_addr: &st
     // Prefer the remote agent's own session, so a plain answer goes back to that agent.
     let proxy = hub.proxy(from_addr).or_else(|| hub.proxy(contact));
     if let Some(proxy) = proxy {
-        let header = if ask {
-            format!("[letagents · verified {from_addr}] ASK")
-        } else {
-            format!("[letagents · verified {from_addr}]")
-        };
+        let who = label(from_addr, true, note_of(from_addr).as_deref());
+        let header = if ask { format!("{who} ASK") } else { who };
         let sent = proxy.send(&target, &format!("{header}\n\n{}", inner.body), None, ask).await;
         match &sent {
             Ok(s) if !s.delivered => log(format!("intercom -> {target}: broker refused: {}", s.reason.clone().unwrap_or_default())),
@@ -859,7 +939,7 @@ async fn resolve_waiter(hub: &Hub, waiter: Option<Waiter>, reply: Spooled) {
     match waiter {
         Some(Waiter::Intercom { proxy, local_from, local_msg }) => {
             // Without the original intercom message (after a restart), say which ask this answers.
-            let text = if local_msg.is_empty() { format!("[letagents · verified {from}] REPLY {}\n\n{}", reply.reply_to.as_deref().unwrap_or("?"), reply.text) } else { reply.text.clone() };
+            let text = if local_msg.is_empty() { format!("{} REPLY {}\n\n{}", label(&from, true, note_of(&from).as_deref()), reply.reply_to.as_deref().unwrap_or("?"), reply.text) } else { reply.text.clone() };
             let link = Some(local_msg.as_str()).filter(|s| !s.is_empty());
             let ok = match hub.proxy(&proxy) {
                 Some(p) => p.send(&local_from, &text, link, false).await.map(|s| s.delivered).unwrap_or(false),
@@ -942,14 +1022,19 @@ async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
     }
     // A valid one-time invite code from our `letagents invite`: the human who shared it approved this contact.
     if inner.invite.as_deref().is_some_and(store::redeem_invite) {
-        let note = match store::accept_invited(&sender, &inner.body, inner.invite.as_deref().and_then(drops::take_invite)) {
-            Ok(name) => {
+        let code = inner.invite.clone().unwrap_or_default();
+        let note = match store::accept_invited(&sender, &inner.body, drops::take_invite(&code), &code) {
+            Ok((name, bound)) => {
                 log(format!("added contact {name} ({}) by invite code", sender.safety_number()));
+                if let Some(agent) = &bound {
+                    log(format!("bound {name} to {agent} (from the invite)"));
+                }
                 // Its invite's drop code is now its own: no expiry at the relay any more.
                 refresh_drops(false).await;
                 connect_contact(hub, &name).await;
                 let _ = request_roster(hub, &name).await;
-                format!("[letagents] added contact {name} (safety number {}): it used your invite code. Remove it with: letagents contact rm {name}", sender.safety_number())
+                let bound = bound.map(|a| format!(" It reaches only {a}, and {a} writes only to it.")).unwrap_or_default();
+                format!("[letagents] added contact {name} (safety number {}): it used your invite code.{bound} Remove it with: letagents contact rm {name}", sender.safety_number())
             }
             Err(e) => return log(format!("invite: could not add contact: {e}")),
         };
@@ -1192,13 +1277,39 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             }
             Ok(json!({ "ok": true }))
         }
-        "list" => Ok(directory(hub, r.contact.as_deref(), Duration::from_millis(if r.wait_ms == 0 { 6000 } else { r.wait_ms.min(20_000) })).await),
+        "list" => {
+            let wait = Duration::from_millis(if r.wait_ms == 0 { 6000 } else { r.wait_ms.min(20_000) });
+            // A bound agent sees only its contact's agents: not the agents on this machine, not other contacts.
+            match store::bound_to(&me_as, &store::contacts()) {
+                Some((c, _)) => {
+                    let mut v = directory(hub, Some(&c), wait).await;
+                    v["local"] = json!([]);
+                    v["groups"] = json!([]);
+                    Ok(v)
+                }
+                None => Ok(directory(hub, r.contact.as_deref(), wait).await),
+            }
+        }
         "send" | "ask" => {
             let local: Vec<String> = hub.local_roster().await.into_iter().map(|a| a.name).collect();
             let targets: Vec<String> = match parse_to(&r.to, &hub.me.name, &local)? {
                 To::Group(g) => store::groups().get(&g).cloned().ok_or_else(|| anyhow!("no group @{g}"))?,
                 _ => vec![r.to.clone()],
             };
+            // The binding check for every target before anything is sent.
+            let all = store::contacts();
+            for t in &targets {
+                let dest = match parse_to(t, &hub.me.name, &local) {
+                    Ok(To::Contact { contact, .. }) => Some(contact),
+                    Ok(_) => None,
+                    Err(e) if store::bound_to(&me_as, &all).is_none() => return Err(e),
+                    Err(_) => None,
+                };
+                if let Err(e) = may_write(&all, &me_as, dest.as_deref()) {
+                    log(format!("REFUSED out {} from {me_as} -> {t}: bound", r.op));
+                    bail!("refused: {e}");
+                }
+            }
             let mut results = vec![];
             let mut replies = vec![];
             for t in targets {
@@ -1208,7 +1319,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                         let id = uuid::Uuid::new_v4().to_string();
                         if r.op == "ask" {
                             let (tx, rx) = oneshot::channel();
-                            hub.record_ask(&id, &me_as, None);
+                            hub.record_ask(&id, &me_as, None, None);
                             hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Socket { asker: me_as.clone(), tx });
                             replies.push((t.clone(), id.clone(), rx));
                         }
@@ -1222,7 +1333,11 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                         if let Some(a) = &agent {
                             hub.set_last_peer(agent_addr(a, &contact), &me_as);
                         }
-                        hub.seal_send(&contact, &r.op, &r.text, None, Some(me_as.clone()), agent).await?
+                        let id = hub.seal_send(&contact, &r.op, &r.text, None, Some(me_as.clone()), agent).await?;
+                        if r.op == "ask" {
+                            hub.record_ask(&id, &me_as, None, Some(&contact));
+                        }
+                        id
                     }
                 };
                 log(format!("out {} -> {t} (from socket, as {me_as})", r.op));
@@ -1230,7 +1345,6 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
                 hub.receipts.lock().unwrap().insert(id.clone(), ReceiptWaiter::Socket(rtx));
                 if r.op == "ask" {
                     let (tx, rx) = oneshot::channel();
-                    hub.record_ask(&id, &me_as, None);
                     hub.waiters.lock().unwrap().insert(id.clone(), Waiter::Socket { asker: me_as.clone(), tx });
                     replies.push((t.clone(), id.clone(), rx));
                 }
@@ -1263,7 +1377,12 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             Ok(json!({ "ok": true, "sent": sent, "replies": out }))
         }
         "reply" => {
-            let (contact, _) = hub.spool.lock().unwrap().answerable.remove(&r.msg).ok_or_else(|| anyhow!("no open ask with id {}", r.msg))?;
+            let (contact, _) = hub.spool.lock().unwrap().answerable.get(&r.msg).cloned().ok_or_else(|| anyhow!("no open ask with id {}", r.msg))?;
+            if let Err(e) = may_write(&store::contacts(), &me_as, Some(contact.as_str()).filter(|c| !c.is_empty())) {
+                log(format!("REFUSED reply from {me_as}: bound"));
+                bail!("refused: {e}");
+            }
+            hub.spool.lock().unwrap().answerable.remove(&r.msg);
             hub.save_spool(&hub.spool.lock().unwrap());
             if contact.is_empty() {
                 // A local ask: hand the reply straight to the asker.
@@ -1341,12 +1460,51 @@ mod tests {
 
     #[test]
     fn headers_name_the_sender_once() {
-        assert_eq!(render(&msg("laptop/tester", "send"), "laptop"), "[letagents · laptop/tester]\n\nbody");
-        assert_eq!(render(&msg("devbox/planner", "send"), "laptop"), "[letagents · verified devbox/planner]\n\nbody");
-        assert_eq!(render(&msg("devbox/planner", "ask"), "laptop"), "[letagents · verified devbox/planner] ASK id1\n\nbody");
-        assert_eq!(render(&msg("laptop/tester", "reply"), "laptop"), "[letagents · laptop/tester] REPLY q1\n\nbody");
+        assert_eq!(render(&msg("laptop/tester", "send"), "laptop", None), "[letagents · laptop/tester]\n\nbody");
+        assert_eq!(render(&msg("devbox/planner", "send"), "laptop", None), "[letagents · verified devbox/planner]\n\nbody");
+        assert_eq!(render(&msg("devbox/planner", "ask"), "laptop", None), "[letagents · verified devbox/planner] ASK id1\n\nbody");
+        assert_eq!(render(&msg("laptop/tester", "reply"), "laptop", None), "[letagents · laptop/tester] REPLY q1\n\nbody");
         for kind in ["send", "ask", "reply"] {
-            assert_eq!(render(&msg("devbox/planner", kind), "laptop").matches("devbox/planner").count(), 1);
+            assert_eq!(render(&msg("devbox/planner", kind), "laptop", None).matches("devbox/planner").count(), 1);
         }
+    }
+
+    #[test]
+    fn the_note_is_in_the_label_of_remote_senders_only() {
+        assert_eq!(render(&msg("x/alice", "send"), "laptop", Some("external engineer")), "[letagents · verified x/alice · note: external engineer]\n\nbody");
+        assert_eq!(render(&msg("x/alice", "ask"), "laptop", Some("n")), "[letagents · verified x/alice · note: n] ASK id1\n\nbody");
+        assert_eq!(render(&msg("laptop/tester", "send"), "laptop", Some("n")), "[letagents · laptop/tester]\n\nbody");
+    }
+
+    fn bound(all: &mut store::Contacts, name: &str, agent: &str, exclusive: bool) {
+        all.insert(name.into(), store::Contact { bind: Some(store::Bind { agent: agent.into(), exclusive }), rules: store::bind_rules(agent), ..Default::default() });
+    }
+
+    #[test]
+    fn a_bound_agent_writes_only_to_its_contact() {
+        let mut all = store::Contacts::new();
+        bound(&mut all, "x", "guide", false);
+        all.insert("y".into(), store::Contact::default());
+        assert!(may_write(&all, "guide", Some("x")).is_ok());
+        assert!(may_write(&all, "guide", Some("y")).unwrap_err().contains("bound to contact x"));
+        assert!(may_write(&all, "guide", None).unwrap_err().contains("not to agents on this machine"));
+        // Not exclusive: other local agents still reach x, and anything else.
+        assert!(may_write(&all, "planner", Some("x")).is_ok());
+        assert!(may_write(&all, "planner", Some("y")).is_ok());
+        assert!(may_write(&all, "planner", None).is_ok());
+        bound(&mut all, "x", "guide", true);
+        assert!(may_write(&all, "planner", Some("x")).unwrap_err().contains("exclusive"));
+        assert!(may_write(&all, "inbox", Some("x")).is_err());
+        assert!(may_write(&all, "guide", Some("x")).is_ok());
+    }
+
+    #[test]
+    fn other_contacts_do_not_see_a_bound_agent() {
+        let mut all = store::Contacts::new();
+        bound(&mut all, "x", "guide", false);
+        let a = |n: &str| Agent { name: n.into(), harness: "mcp".into(), status: String::new(), r#where: String::new() };
+        let roster = vec![a("guide"), a("planner")];
+        assert_eq!(roster_for(&roster, "y", &all).len(), 1);
+        assert_eq!(roster_for(&roster, "x", &all).len(), 2);
     }
 }

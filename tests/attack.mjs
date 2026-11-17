@@ -18,9 +18,11 @@
 //   watch <socket> <agent> <secs>                                        pushes received (one per line)
 //   proxy <port-file> <target-port> <capture-file>                      TCP proxy that records client bytes
 //   race <address-with-drop> <envelope-file>...                          post envelopes at the same moment
-//   mcp <bin> <json-lines-file>                                          JSON-RPC over stdio, prints answers
-//   pi <broker.sock> <name> <secs> [list]       a pi session on a pi-intercom broker: prints each message it
-//                                               gets as JSON; with `list`, then the names of all sessions
+//   mcp <bin> <json-lines-file> [as]                                     JSON-RPC over stdio, prints answers
+//   pi <broker.sock> <name> <secs> [list | send:<to>:<text>]
+//                                               a pi session on a pi-intercom broker: prints each message it
+//                                               gets as JSON; with `list`, then the names of all sessions;
+//                                               with `send:`, it first sends <text> to session <to>
 
 import fs from "node:fs";
 import net from "node:net";
@@ -211,7 +213,7 @@ switch (cmd) {
     break;
   }
   case "mcp": {
-    const p = spawn(args[0], ["mcp", "--as", "attacker"], { stdio: ["pipe", "pipe", "inherit"] });
+    const p = spawn(args[0], ["mcp", "--as", args[2] || "attacker"], { stdio: ["pipe", "pipe", "inherit"] });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
     for (const line of fs.readFileSync(args[1], "utf8").split("\n").filter(Boolean)) {
@@ -240,6 +242,10 @@ switch (cmd) {
       while (buf.length >= 4 && buf.length >= 4 + buf.readUInt32BE(0)) {
         const f = JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString());
         buf = buf.subarray(4 + buf.readUInt32BE(0));
+        if (f.type === "registered" && args[3]?.startsWith("send:")) {
+          const [, to, ...text] = args[3].split(":");
+          send({ type: "send", to, message: { id: globalThis.crypto.randomUUID(), timestamp: Date.now(), content: { text: text.join(":") } } });
+        }
         if (f.type === "message") console.log(JSON.stringify({ from: f.from?.name, text: f.message?.content?.text }));
         if (f.type === "sessions") (console.log(`sessions ${JSON.stringify(f.sessions.map((x) => x.name))}`), process.exit(0));
       }

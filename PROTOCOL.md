@@ -32,7 +32,7 @@ Safety number = base32 of the first 20 bytes of SHA-256(sig pub ‖ box pub), in
 
 - `send`, `ask`, `reply`: agent text. A reply carries `reply_to` = the ask's id.
 - `list`: asks the recipient's daemon who is online. It answers with `roster`, `reply_to` = the list id.
-- `roster`: body is a JSON array of `{name, harness, status, where}`. Sent unsolicited as presence when the set of agents changes.
+- `roster`: body is a JSON array of `{name, harness, status, where}`. Sent unsolicited as presence when the set of agents changes, to contacts whose machine-wide rule (`from *`, `to *`) allows `list`.
 - `receipt`: `reply_to` = a message id, body `{status: pushed | queued | refused, detail}`. Sent for every accepted or refused send/ask/list from a known contact; never for receipts, rosters or hellos.
 - `hello`: carries the sender's full address in `from` (its drop is the code the sender gives the recipient, or the shared code), its name in `body`, and `invite` = the code from the recipient's invite, if it has one. An unknown sender with an unused, unexpired code is added as a contact at once (allow `send,ask,reply,list`) and the code is deleted. Without a valid code the hello becomes a pending request for a human to accept. The request id is made by the receiver (never taken from the message); a new hello from the same keys keeps it.
 
@@ -72,6 +72,10 @@ A plain-HTTP request (as Cloudflare's edge reports it: `x-forwarded-proto` or `c
 ## Receiving
 
 Decrypt, verify the signature against `inner.from`, check `inner.to` is us, drop stale (`ts` older than 48 h) and already-seen `id`s, then apply local contact rules: unknown senders are dropped (a `hello` becomes a pending request), a known id with a different box key is refused, each contact has an allow list of kinds (`send`, `ask`, `reply`, `list`), and optional per-agent rules (`from` their agent, `to` our agent, `*` and `prefix*` globs) are checked in order: the first match decides. `list` is decided only by rules whose `to` is `*`.
+
+A reply to an ask that this machine sent to the same contact skips the per-agent rules (the contact's allow list still applies): the ask invited it, and it goes only to the agent that asked. A reply that names an ask sent to another contact is refused.
+
+Rules have an outbound part too, local only (nothing on the wire changes, the relay and the contact learn nothing): a contact can be bound to one local agent (`--agent`). Then its rules are `* -> <agent>: send,ask,reply` and `* -> *: nothing`, and the daemon checks every message a local agent writes, on every local path (`daemon.sock`, `letagents mcp`, the pi-intercom adapter): the bound agent may send, ask and reply only to its contact; with `--exclusive`, the contact takes messages only from the bound agent. A bound agent takes `send` and `ask` only from its contact (else refused: `<agent> takes messages from one contact only`) and is left out of the rosters other contacts get. The local check trusts the caller's agent name; see docs/DECISIONS.md #13.
 
 Routing on the receiver: a `send` or `ask` goes to `to_agent`. With no `to_agent`, it goes to the local agent that last wrote to the sender's agent (within 1 hour), else to the contact's configured session, else it is refused with a `receipt` whose detail starts `name an agent`. A `reply` goes to the local agent that sent the ask with id `reply_to`; the receiver keeps that link for 48 h. A reply with no known ask waits in the machine inbox. The daemon never delivers into a session the sender did not name or answer. A sender cannot name the daemon's own sessions (a contact name, `<contact>/<agent>`, `letagents-daemon`), or a name with `/`, `@` or control characters: that is refused with `not an agent on this machine`, so a contact cannot make the receiver forward text to someone else. Of a contact's `roster`, the receiver keeps at most 64 agents. A `receipt` detail is shown as one line of at most 200 characters.
 

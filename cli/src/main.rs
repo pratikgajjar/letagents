@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use crypto::{now_ms, open, seal, Identity, Inner, Peer, RULE_KINDS};
 use serde_json::json;
-use store::{AgentRule, Contact, Seen};
+use store::{AgentRule, BindSpec, Contact, Seen};
 
 #[derive(Parser)]
 #[command(name = "letagents", version, about = "End-to-end sealed messages between AI agents. Agents: read https://letagents.talk/agents.md")]
@@ -39,6 +39,8 @@ enum Cmd {
         /// Do not install the background service
         #[arg(long)]
         no_service: bool,
+        #[command(flatten)]
+        bind: BindArgs,
     },
     /// Join with an invite: create keys if needed, add the inviter, send hello with its code, start the daemon
     Join {
@@ -51,6 +53,8 @@ enum Cmd {
         /// Do not install the background service
         #[arg(long)]
         no_service: bool,
+        #[command(flatten)]
+        bind: BindArgs,
     },
     /// Manage trusted contacts (machines)
     Contact {
@@ -154,6 +158,8 @@ enum ContactCmd {
         /// Default local agent for its messages
         #[arg(long)]
         session: Option<String>,
+        #[command(flatten)]
+        bind: BindArgs,
     },
     /// Accept a pending contact request by id
     Accept {
@@ -161,11 +167,68 @@ enum ContactCmd {
         name: String,
         #[arg(long, default_value = "send,ask,reply,list")]
         allow: String,
+        #[command(flatten)]
+        bind: BindArgs,
     },
+    /// Bind a contact to one local agent: its agents reach only that agent, and that agent writes only to them
+    Bind {
+        contact: String,
+        agent: String,
+        /// Only the bound agent may write to this contact (default: other local agents may too)
+        #[arg(long)]
+        exclusive: bool,
+        /// A reminder shown in the label of this contact's messages (not a security control)
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Undo `bind`: the contact may reach every agent again (its allow list applies)
+    Unbind { contact: String },
     Ls,
     /// Remove a contact and revoke its drop code at the relay (its sends are refused)
     #[command(alias = "remove")]
     Rm { name: String },
+}
+
+/// `--agent`, `--exclusive`, `--note` wherever a contact is added.
+#[derive(clap::Args, Default)]
+struct BindArgs {
+    /// Bind this contact to one local agent: its agents reach only that agent, and that agent writes only to them
+    #[arg(long)]
+    agent: Option<String>,
+    /// With --agent: only the bound agent may write to this contact (default: other local agents may too)
+    #[arg(long, requires = "agent")]
+    exclusive: bool,
+    /// A reminder shown in the label of this contact's messages (not a security control)
+    #[arg(long)]
+    note: Option<String>,
+}
+
+impl BindArgs {
+    fn spec(self) -> BindSpec {
+        BindSpec { agent: self.agent, exclusive: self.exclusive, note: self.note }
+    }
+}
+
+/// Apply `--agent` / `--note` to a contact and say what it does.
+fn bind_contact(name: &str, spec: &BindSpec) -> Result<()> {
+    if spec.is_empty() {
+        return Ok(());
+    }
+    store::apply_bind(name, spec)?;
+    if let Some(agent) = &spec.agent {
+        println!("{}", bind_summary(name, agent, spec.exclusive));
+    }
+    if let Some(n) = store::contacts().get(name).and_then(|c| c.note.clone()) {
+        println!("note for {name}: {n} (a reminder in its labels, not a security control)");
+    }
+    Ok(())
+}
+
+fn bind_summary(name: &str, agent: &str, exclusive: bool) -> String {
+    format!(
+        "bound {name} to {agent}:\n  {name}/* -> {agent}: send,ask,reply\n  {name}/* -> *: nothing (no other agent, no list)\n  {agent} may write only to {name}/<agent>\n  {}",
+        if exclusive { format!("only {agent} may write to {name} (exclusive)") } else { format!("other local agents may still write to {name} (add --exclusive to stop that)") }
+    )
 }
 
 #[derive(Subcommand)]
@@ -289,13 +352,14 @@ fn add_contact(name: &str, address: &str, allow: &str, session: Option<String>) 
     }
     let mut all = store::contacts();
     let rules = all.get(name).map(|c| c.rules.clone()).unwrap_or_default();
+    let (bind, note) = all.get(name).map(|c| (c.bind.clone(), c.note.clone())).unwrap_or_default();
     // The same machine again keeps the drop code we gave it; a different one gets a new code later.
     let (our_drop, our_drop_ok) = all
         .get(name)
         .filter(|c| Peer::parse(&c.address).is_ok_and(|o| o.same_keys(&p)))
         .map(|c| (c.our_drop.clone(), c.our_drop_ok))
         .unwrap_or_default();
-    all.insert(name.into(), Contact { address, allow: parse_allow(allow)?, session, added: now_ms(), rules, invite, our_drop, our_drop_ok });
+    all.insert(name.into(), Contact { address, allow: parse_allow(allow)?, session, added: now_ms(), rules, invite, our_drop, our_drop_ok, bind, note });
     store::write("contacts.json", &all)?;
     Ok(p)
 }
@@ -317,8 +381,13 @@ fn print_msg(me: &Identity, env: &[u8], seen: &mut Seen) {
                     "{}",
                     json!({ "from": format!("{name}/{from_agent}"), "kind": inner.kind, "id": inner.id, "reply_to": inner.reply_to, "to": inner.to_agent, "ts": inner.ts, "body": inner.body })
                 ),
-                Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") && inner.invite.as_deref().is_some_and(store::redeem_invite) => match store::accept_invited(&sender, &inner.body, inner.invite.as_deref().and_then(drops::take_invite)) {
-                    Ok(name) => eprintln!("added contact {name} ({}): it used your invite code", sender.safety_number()),
+                Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") && inner.invite.as_deref().is_some_and(store::redeem_invite) => match store::accept_invited(&sender, &inner.body, inner.invite.as_deref().and_then(drops::take_invite), inner.invite.as_deref().unwrap_or_default()) {
+                    Ok((name, bound)) => {
+                        eprintln!("added contact {name} ({}): it used your invite code", sender.safety_number());
+                        if let Some(agent) = bound {
+                            eprintln!("bound {name} to {agent}");
+                        }
+                    }
                     Err(e) => eprintln!("invite from {}: {e}", sender.safety_number()),
                 },
                 Err(r) if inner.kind == "hello" && r.starts_with("unknown sender") => {
@@ -345,11 +414,22 @@ async fn main() -> Result<()> {
             whoami()
         }
         Cmd::Whoami => whoami(),
-        Cmd::Invite { me, no_service } => {
+        Cmd::Invite { me, no_service, bind } => {
+            let spec = bind.spec();
+            if let Some(a) = &spec.agent {
+                // Check the name now, not when the invite is used.
+                store::check_bind_agent(a, None, &store::contacts())?;
+            }
             let me = ensure_identity(me).await?;
             ensure_daemon(no_service).await;
             connect_harnesses(no_service);
             let code = store::new_invite()?;
+            if !spec.is_empty() {
+                store::save_invite_bind(&code, &spec)?;
+                if let Some(a) = &spec.agent {
+                    eprintln!("whoever uses this invite is bound to {a}{}", if spec.exclusive { " (exclusive)" } else { "" });
+                }
+            }
             let a = format!("{}.{code}", invite_address(&me, &code).await?);
             println!(
                 "letagents invite from \"{n}\" (one use, valid 7 days; give it only to the agent you want)\naddress: {a}\nsafety number: {}\n\nOn the other machine, paste one line:\n  curl -fsSL https://letagents.talk/install.sh | sh -s -- join {n} {a}\nNo install (Node 20+):\n  curl -fsSL https://letagents.talk/la.mjs | node - join {n} {a}",
@@ -358,12 +438,19 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Join { name, invite, me, no_service } => {
+        Cmd::Join { name, invite, me, no_service, bind } => {
             if store::split_invite(&invite).1.is_none() {
                 bail!("this is an address without an invite code; ask for a new invite (letagents invite), or use: letagents contact add {name} <address>");
             }
             let me = ensure_identity(me).await?;
             add_contact(&name, &invite, "send,ask,reply,list", None)?;
+            // Bind before the hello: the rules hold before the inviter can write.
+            if let Err(e) = bind_contact(&name, &bind.spec()) {
+                let mut all = store::contacts();
+                all.remove(&name);
+                store::write("contacts.json", &all)?;
+                return Err(e);
+            }
             let (p, _) = send_hello(&me, &name).await?;
             ensure_daemon(no_service).await;
             connect_harnesses(no_service);
@@ -375,16 +462,18 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Contact { cmd } => match cmd {
-            ContactCmd::Add { name, address, allow, session } => {
+            ContactCmd::Add { name, address, allow, session, bind } => {
                 let p = add_contact(&name, &address, &allow, session)?;
+                bind_contact(&name, &bind.spec())?;
                 let _ = daemon::call(json!({ "op": "reload" })).await;
                 println!("added {name}; safety number {} (compare it with their human if the address came through a channel you do not trust)", p.safety_number());
                 Ok(())
             }
-            ContactCmd::Accept { request, name, allow } => {
+            ContactCmd::Accept { request, name, allow, bind } => {
                 let mut reqs = store::requests();
                 let r = reqs.remove(&request).with_context(|| format!("no request {request}; see `letagents requests`"))?;
                 add_contact(&name, &r.address, &allow, None)?;
+                bind_contact(&name, &bind.spec())?;
                 store::write("requests.json", &reqs)?;
                 let _ = daemon::call(json!({ "op": "reload" })).await;
                 println!("accepted {name} ({})", r.safety);
@@ -393,8 +482,22 @@ async fn main() -> Result<()> {
             ContactCmd::Ls => {
                 for (n, c) in store::contacts() {
                     let p = Peer::parse(&c.address)?;
-                    println!("{n:<16} {}  allow={}  rules={}", p.safety_number(), c.allow.join(","), c.rules.len());
+                    let bound = c.bind.map(|b| format!("  bound={}{}", b.agent, if b.exclusive { " (exclusive)" } else { "" })).unwrap_or_default();
+                    let note = c.note.map(|t| format!("  note: {t}")).unwrap_or_default();
+                    println!("{n:<16} {}  allow={}  rules={}{bound}{note}", p.safety_number(), c.allow.join(","), c.rules.len());
                 }
+                Ok(())
+            }
+            ContactCmd::Bind { contact, agent, exclusive, note } => {
+                let spec = BindSpec { agent: Some(agent), exclusive, note };
+                store::apply_bind(&contact, &spec)?;
+                println!("{}", bind_summary(&contact, spec.agent.as_deref().unwrap_or_default(), exclusive));
+                println!("rules apply at once (other rules of {contact} were replaced)");
+                Ok(())
+            }
+            ContactCmd::Unbind { contact } => {
+                let agent = store::unbind(&contact)?;
+                println!("unbound {contact} from {agent}: its rules were removed, so its allow list applies to every agent");
                 Ok(())
             }
             ContactCmd::Rm { name } => remove_contact(&name).await,
@@ -405,6 +508,9 @@ async fn main() -> Result<()> {
                 RuleCmd::Add { contact, from, to, allow } => {
                     let c = all.get_mut(&contact).with_context(|| format!("no contact {contact}"))?;
                     c.rules.push(AgentRule { from, to, allow: parse_allow(&allow)? });
+                    if let Some(b) = &c.bind {
+                        println!("note: {contact} is bound to {}: its last rule matches every message, so a rule added after it never decides", b.agent);
+                    }
                     store::write("contacts.json", &all)?;
                     println!("rule added; rules apply at once");
                 }
@@ -424,6 +530,9 @@ async fn main() -> Result<()> {
                         bail!("no rule #{n}");
                     }
                     c.rules.remove(n);
+                    if let Some(b) = &c.bind {
+                        println!("warning: {contact} is still bound to {} for what that agent writes; its inbound rules changed (to undo the binding: letagents contact unbind {contact})", b.agent);
+                    }
                     store::write("contacts.json", &all)?;
                     println!("rule removed");
                 }
