@@ -5,15 +5,24 @@ workers_dev = false
 routes = [{ pattern = "letagents.talk", custom_domain = true }]
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "cargo install -q worker-build@^0.8 && worker-build --release"
 
 [[durable_objects.bindings]]
 name = "MAILBOX"
 class_name = "Mailbox"
 
+[[durable_objects.bindings]]
+name = "STATS"
+class_name = "Stats"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Mailbox"]
+
+# Public usage counters: aggregates only, no mailbox ids (see PROTOCOL.md, What the relay keeps).
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Stats"]
 
 [observability]
 enabled = false

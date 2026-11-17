@@ -62,6 +62,7 @@ Routing on the receiver: a `send` or `ask` goes to `to_agent`. With no `to_agent
 
 - Per mailbox: SHA-256(drop), last login time, and undelivered envelopes.
 - Limits: 32 KiB per envelope, 200 envelopes per mailbox, 48 h retention, 60 sends/minute per mailbox, 10 inbox logins/minute per mailbox and per IP, and a per-location cap on all relay requests. Over a limit the relay answers 429 with `retry-after`; clients wait and retry. Clients keep a WebSocket open (free for the relay while idle) and fall back to HTTPS polling with backoff. A mailbox idle for 14 days with nothing waiting is erased entirely.
+- Public counters (`/stats.json`, shown on the home page): per day, the number of mailboxes that logged in and of envelopes accepted; per week, mailboxes that logged in; totals since the counters started. No mailbox id or IP is stored with them. Each mailbox keeps only the day and week it last counted itself. Days older than 30 and weeks older than 8 are deleted.
 - It sees the recipient id, padded size, time and IP addresses. It never sees text, sender identity, contacts or rules.
 
 ## Known limits of v1

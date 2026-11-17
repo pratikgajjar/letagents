@@ -95,7 +95,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let method = if req.method() == Method::Head { Method::Get } else { req.method() };
     match (method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
-            let mut r = if wants_markdown(&req) { page(AGENTS_MD, "text/markdown; charset=utf-8")? } else { page(INDEX_HTML, "text/html; charset=utf-8")? };
+            let mut r = if wants_markdown(&req) { page(AGENTS_MD, "text/markdown; charset=utf-8")? } else { page(&with_stats(&stats(&env).await), "text/html; charset=utf-8")? };
             r.headers_mut().set("vary", "Accept, User-Agent")?;
             r.headers_mut().set("link", r#"</agents.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="alternate"; type="text/plain""#)?;
             return Ok(r);
@@ -110,6 +110,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/protocol.md") => return page(PROTOCOL_MD, "text/markdown; charset=utf-8"),
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
         (Method::Get, "/la.mjs") => return page(LA_MJS, "text/javascript; charset=utf-8"),
+        (Method::Get, "/stats.json") => {
+            let mut r = json(200, stats(&env).await)?;
+            r.headers_mut().set("cache-control", "public, max-age=60")?;
+            r.headers_mut().set("access-control-allow-origin", "*")?;
+            return Ok(r);
+        }
         (Method::Get, "/og.png") => return image(OG_PNG),
         (Method::Get, "/x.png") => return image(X_PNG),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
@@ -178,6 +184,7 @@ struct ClientFrame {
 #[durable_object]
 pub struct Mailbox {
     state: State,
+    env: Env,
     window_start: Cell<i64>,
     window_count: Cell<u32>,
 }
@@ -245,6 +252,7 @@ impl Mailbox {
             let _ = ws.send_with_str(&frame);
         }
         self.schedule_cleanup().await?;
+        bump_stat(&self.env, "sent=1").await;
         json(202, serde_json::json!({ "ok": true, "seq": seq.seq }))
     }
 
@@ -281,6 +289,7 @@ impl Mailbox {
         self.set_meta("drop_hash", &drop_hash)?;
         self.set_meta("last_seen", &now_ms().to_string())?;
         self.schedule_cleanup().await?;
+        self.count_active().await?;
         // Keepalive pings are answered by the runtime itself: the object stays hibernated (not billed).
         if let Ok(pair) = worker::worker_sys::WebSocketRequestResponsePair::new(r#"{"t":"ping"}"#, r#"{"t":"pong"}"#) {
             self.state.set_websocket_auto_response(&pair);
@@ -339,14 +348,14 @@ impl Mailbox {
 }
 
 impl DurableObject for Mailbox {
-    fn new(state: State, _env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         let sql = state.storage().sql();
         let _ = sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)", None);
         let _ = sql.exec(
             "CREATE TABLE IF NOT EXISTS msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, ct BLOB NOT NULL)",
             None,
         );
-        Self { state, window_start: Cell::new(0), window_count: Cell::new(0) }
+        Self { state, env, window_start: Cell::new(0), window_count: Cell::new(0) }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -423,6 +432,163 @@ impl Mailbox {
             self.state.storage().set_alarm(at).await?;
         }
         Ok(())
+    }
+}
+
+impl Mailbox {
+    /// Public counters: this mailbox is active today / this week / for the first time. The mailbox keeps
+    /// only the day and week it last counted itself; the stats object gets increments, never an id.
+    async fn count_active(&self) -> Result<()> {
+        let day = now_ms() / 86_400_000;
+        let week = (day + 3) / 7; // weeks start on Monday (1970-01-01 was a Thursday)
+        let mut q = vec![];
+        if self.meta("stat_day")?.as_deref() != Some(&day.to_string()) {
+            self.set_meta("stat_day", &day.to_string())?;
+            q.push("day=1");
+        }
+        if self.meta("stat_week")?.as_deref() != Some(&week.to_string()) {
+            self.set_meta("stat_week", &week.to_string())?;
+            q.push("week=1");
+        }
+        if self.meta("counted")?.is_none() {
+            self.set_meta("counted", "1")?;
+            q.push("new=1");
+        }
+        if !q.is_empty() {
+            bump_stat(&self.env, &q.join("&")).await;
+        }
+        Ok(())
+    }
+}
+
+// ---------- public usage counters ----------
+
+fn stats_stub(env: &Env) -> Result<Stub> {
+    env.durable_object("STATS")?.id_from_name("global")?.get_stub()
+}
+
+/// Add to the public counters. Best effort: a failure never fails the request it counts.
+async fn bump_stat(env: &Env, query: &str) {
+    if let Ok(stub) = stats_stub(env) {
+        let _ = stub.fetch_with_str(&format!("https://stats/inc?{query}")).await;
+    }
+}
+
+async fn stats(env: &Env) -> serde_json::Value {
+    let got = async {
+        let mut r = stats_stub(env)?.fetch_with_str("https://stats/get").await?;
+        r.json::<serde_json::Value>().await
+    };
+    got.await.unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn fmt_n(n: i64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The page with live counters filled in.
+fn with_stats(s: &serde_json::Value) -> String {
+    let n = |k: &str| s[k].as_i64().map(fmt_n).unwrap_or_else(|| "-".into());
+    INDEX_HTML
+        .replace("__MACHINES_WEEK__", &n("machines_week"))
+        .replace("__MACHINES_TOTAL__", &n("machines_total"))
+        .replace("__MSGS_TODAY__", &n("messages_today"))
+        .replace("__MSGS_TOTAL__", &n("messages_total"))
+        .replace("__STATS_SINCE__", s["since"].as_str().unwrap_or("-"))
+}
+
+#[derive(Deserialize)]
+struct Num {
+    n: Option<i64>,
+}
+
+/// One object for the whole relay: per-day and per-week counts and totals. No ids, no IPs. Days older
+/// than 30 and weeks older than 8 are deleted.
+#[durable_object]
+pub struct Stats {
+    state: State,
+}
+
+impl Stats {
+    fn get(&self, sql: &str, args: Vec<SqlStorageValue>) -> i64 {
+        self.state.storage().sql().exec(sql, Some(args)).and_then(|c| c.one::<Num>()).ok().and_then(|r| r.n).unwrap_or(0)
+    }
+}
+
+impl DurableObject for Stats {
+    fn new(state: State, _env: Env) -> Self {
+        let sql = state.storage().sql();
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS day (d INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0)", None);
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS week (w INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0)", None);
+        let _ = sql.exec("CREATE TABLE IF NOT EXISTS total (k TEXT PRIMARY KEY, v INTEGER NOT NULL)", None);
+        Self { state }
+    }
+
+    async fn fetch(&self, req: Request) -> Result<Response> {
+        let url = req.url()?;
+        let sql = self.state.storage().sql();
+        let day = now_ms() / 86_400_000;
+        let week = (day + 3) / 7;
+        if url.path() == "/inc" {
+            let has = |k: &str| url.query_pairs().any(|(n, _)| n == k);
+            let bump = |k: &str| sql.exec("INSERT INTO total (k, v) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET v = v + 1", vec![k.into()]);
+            if sql.exec("SELECT v AS n FROM total WHERE k = 'since'", None)?.to_array::<Num>()?.is_empty() {
+                sql.exec("INSERT INTO total (k, v) VALUES ('since', ?)", vec![day.into()])?;
+            }
+            if has("sent") {
+                sql.exec("INSERT INTO day (d, sent) VALUES (?, 1) ON CONFLICT(d) DO UPDATE SET sent = sent + 1", vec![day.into()])?;
+                bump("sent")?;
+            }
+            if has("day") {
+                sql.exec("INSERT INTO day (d, active) VALUES (?, 1) ON CONFLICT(d) DO UPDATE SET active = active + 1", vec![day.into()])?;
+            }
+            if has("week") {
+                sql.exec("INSERT INTO week (w, active) VALUES (?, 1) ON CONFLICT(w) DO UPDATE SET active = active + 1", vec![week.into()])?;
+            }
+            if has("new") {
+                bump("machines")?;
+            }
+            sql.exec("DELETE FROM day WHERE d < ?", vec![(day - 30).into()])?;
+            sql.exec("DELETE FROM week WHERE w < ?", vec![(week - 8).into()])?;
+            return Response::ok("");
+        }
+        let since = self.get("SELECT v AS n FROM total WHERE k = 'since'", vec![]);
+        let iso_day = |d: i64| {
+            let (z, era);
+            z = d + 719_468;
+            era = z.div_euclid(146_097);
+            let doe = z.rem_euclid(146_097);
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let dd = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            format!("{:04}-{m:02}-{dd:02}", yoe + era * 400 + if m <= 2 { 1 } else { 0 })
+        };
+        let mut daily = vec![];
+        for row in sql.exec("SELECT d, active, sent FROM day ORDER BY d DESC LIMIT 30", None)?.raw() {
+            if let [SqlStorageValue::Integer(d), SqlStorageValue::Integer(a), SqlStorageValue::Integer(s)] = row?.as_slice() {
+                daily.push(serde_json::json!({ "date": iso_day(*d), "machines": a, "messages": s }));
+            }
+        }
+        Response::from_json(&serde_json::json!({
+            "machines_today": self.get("SELECT active AS n FROM day WHERE d = ?", vec![day.into()]),
+            "machines_week": self.get("SELECT active AS n FROM week WHERE w = ?", vec![week.into()]),
+            "machines_total": self.get("SELECT v AS n FROM total WHERE k = 'machines'", vec![]),
+            "messages_today": self.get("SELECT sent AS n FROM day WHERE d = ?", vec![day.into()]),
+            "messages_total": self.get("SELECT v AS n FROM total WHERE k = 'sent'", vec![]),
+            "since": if since > 0 { iso_day(since) } else { "-".into() },
+            "daily": daily,
+            "note": "Counts from the relay: machines = mailboxes that logged in; messages = sealed envelopes relayed (notes, asks, replies, receipts, presence). Agents per machine are inside the sealed envelopes and are not counted."
+        }))
     }
 }
 

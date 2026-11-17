@@ -220,5 +220,15 @@ else
   fail "tamper (relay answered $c3; see $T/alice.log)"
 fi
 
+# ---------- public usage counters ----------
+STATS=$(curl -fsS "$RELAY/stats.json")
+if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["machines_week"] >= 2 and s["messages_today"] >= 5 and s["messages_total"] >= s["messages_today"], s' "$STATS"; then
+  ok "stats.json counts machines and messages ($(python3 -c 'import json,sys; s=json.loads(sys.argv[1]); print(s["machines_week"], "machines,", s["messages_today"], "messages")' "$STATS"))"
+else
+  fail "stats.json ($STATS)"
+fi
+PAGE=$(curl -fsS -H 'Accept: text/html' "$RELAY/")
+if grep -q "Machines this week" <<<"$PAGE" && ! grep -q "__MACHINES_WEEK__\|__MSGS_" <<<"$PAGE"; then ok "home page shows live counters"; else fail "home page counters"; fi
+
 if [ "$FAILS" -eq 0 ]; then echo "e2e: all checks passed"; else echo "e2e: $FAILS check(s) failed"; fi
 [ "$FAILS" -eq 0 ]
