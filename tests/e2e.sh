@@ -175,41 +175,6 @@ else
   fail "MCP events (AI SDK)"; cat "$T/events.out"
 fi
 
-# ---------- MCP Events: the official conformance suite ----------
-# modelcontextprotocol/conformance PR 521 (SEP-3415 server scenarios), pinned. The runner speaks Streamable
-# HTTP; tests/conformance/bridge.mjs maps it to `letagents mcp` on stdio. bob/ticker writes to alice/conf
-# every second, so streams, polls and webhooks have real events. The Mcp-Name rows are Streamable HTTP rules
-# and letagents speaks stdio only: they are counted as not applicable.
-CONF_COMMIT=76fef32dad810143a56819065b286fa0e93a7256
-CONF="$T/conformance"
-if git init -q "$CONF" && git -C "$CONF" fetch -q --depth 1 https://github.com/modelcontextprotocol/conformance.git "$CONF_COMMIT" \
-  && git -C "$CONF" checkout -q FETCH_HEAD && (cd "$CONF" && npm ci --silent --no-audit --no-fund >/dev/null 2>&1); then
-  LETAGENTS_HOME="$T/alice" PI_CODING_AGENT_DIR="$T/pi" LETAGENTS_RELAY="$RELAY" LETAGENTS_AUTH_HOST=letagents.talk LETAGENTS_EVENTS_CONFORMANCE=1 \
-    node "$ROOT/tests/conformance/bridge.mjs" "$T/bridge.port" "$BIN" mcp --as conf >"$T/bridge.log" 2>&1 &
-  PIDS+=($!)
-  (while sleep 1; do la bob send alice/conf "tick $(date +%s)" --as ticker >/dev/null 2>&1; done) &
-  TICKER=$!
-  PIDS+=($TICKER)
-  wait_for 10 test -s "$T/bridge.port" || die "conformance bridge did not start"
-  for s in events-discovery events-poll events-push events-webhook events-webhook-delivery; do
-    (cd "$CONF" && npx tsx src/index.ts server --url "http://127.0.0.1:$(cat "$T/bridge.port")/mcp" --scenario "$s" --timeout 120000 -o "$T/conf-results") >"$T/conf-$s.log" 2>&1
-    res=$(python3 - "$T/conf-results" "$s" <<'PY'
-import glob, json, sys
-NA = {"sep-3415-mcp-name-missing-rejected", "sep-3415-mcp-name-mismatch-rejected"}  # Streamable HTTP only
-d = sorted(glob.glob(f"{sys.argv[1]}/server-{sys.argv[2]}-*/checks.json"))
-checks = json.load(open(d[-1])) if d else []
-n = lambda st: sum(c["status"] == st and c["id"] not in NA for c in checks)
-bad = [c["id"] for c in checks if c["status"] == "FAILURE" and c["id"] not in NA]
-print(f"{'ok' if checks and not bad else 'FAIL'} {n('SUCCESS')} passed, {len(bad)} failed, {n('WARNING')} warnings, {n('SKIPPED')} skipped, {sum(c['id'] in NA for c in checks)} n/a (stdio){' ' + ' '.join(bad) if bad else ''}")
-PY
-)
-    if [ "${res%% *}" = ok ]; then ok "conformance $s: ${res#ok }"; else fail "conformance $s: ${res#FAIL }"; tail -40 "$T/conf-$s.log"; fi
-  done
-  kill "$TICKER" 2>/dev/null
-else
-  fail "conformance suite checkout ($CONF_COMMIT)"
-fi
-
 # ---------- replayed and tampered envelopes ----------
 # Capture one real sealed envelope (bob's hello to alice) with a one-shot fake relay, then post it to the
 # real relay ourselves: twice (replay) and once with a flipped ciphertext byte (tamper).
@@ -264,6 +229,42 @@ else
 fi
 PAGE=$(curl -fsS -H 'Accept: text/html' "$RELAY/")
 if grep -q "Machines this week" <<<"$PAGE" && ! grep -q "__MACHINES_WEEK__\|__MSGS_" <<<"$PAGE"; then ok "home page shows live counters"; else fail "home page counters"; fi
+
+# ---------- MCP Events: the official conformance suite ----------
+# modelcontextprotocol/conformance PR 521 (SEP-3415 server scenarios), pinned. The runner speaks Streamable
+# HTTP; tests/conformance/bridge.mjs maps it to `letagents mcp` on stdio. bob/ticker writes to alice/conf
+# every 2 s, so streams, polls and webhooks have real events. That is half the relay's 60 sends a minute per
+# mailbox, and this section runs last, so no other check meets the rate limit. The Mcp-Name rows are
+# Streamable HTTP rules and letagents speaks stdio only: they are counted as not applicable.
+CONF_COMMIT=76fef32dad810143a56819065b286fa0e93a7256
+CONF="$T/conformance"
+if git init -q "$CONF" && git -C "$CONF" fetch -q --depth 1 https://github.com/modelcontextprotocol/conformance.git "$CONF_COMMIT" \
+  && git -C "$CONF" checkout -q FETCH_HEAD && (cd "$CONF" && npm ci --silent --no-audit --no-fund >/dev/null 2>&1); then
+  LETAGENTS_HOME="$T/alice" PI_CODING_AGENT_DIR="$T/pi" LETAGENTS_RELAY="$RELAY" LETAGENTS_AUTH_HOST=letagents.talk LETAGENTS_EVENTS_CONFORMANCE=1 \
+    node "$ROOT/tests/conformance/bridge.mjs" "$T/bridge.port" "$BIN" mcp --as conf >"$T/bridge.log" 2>&1 &
+  PIDS+=($!)
+  (while sleep 2; do la bob send alice/conf "tick $(date +%s)" --as ticker >/dev/null 2>&1; done) &
+  TICKER=$!
+  PIDS+=($TICKER)
+  wait_for 10 test -s "$T/bridge.port" || die "conformance bridge did not start"
+  for s in events-discovery events-poll events-push events-webhook events-webhook-delivery; do
+    (cd "$CONF" && npx tsx src/index.ts server --url "http://127.0.0.1:$(cat "$T/bridge.port")/mcp" --scenario "$s" --timeout 120000 -o "$T/conf-results") >"$T/conf-$s.log" 2>&1
+    res=$(python3 - "$T/conf-results" "$s" <<'PY'
+import glob, json, sys
+NA = {"sep-3415-mcp-name-missing-rejected", "sep-3415-mcp-name-mismatch-rejected"}  # Streamable HTTP only
+d = sorted(glob.glob(f"{sys.argv[1]}/server-{sys.argv[2]}-*/checks.json"))
+checks = json.load(open(d[-1])) if d else []
+n = lambda st: sum(c["status"] == st and c["id"] not in NA for c in checks)
+bad = [c["id"] for c in checks if c["status"] == "FAILURE" and c["id"] not in NA]
+print(f"{'ok' if checks and not bad else 'FAIL'} {n('SUCCESS')} passed, {len(bad)} failed, {n('WARNING')} warnings, {n('SKIPPED')} skipped, {sum(c['id'] in NA for c in checks)} n/a (stdio){' ' + ' '.join(bad) if bad else ''}")
+PY
+)
+    if [ "${res%% *}" = ok ]; then ok "conformance $s: ${res#ok }"; else fail "conformance $s: ${res#FAIL }"; tail -40 "$T/conf-$s.log"; fi
+  done
+  kill "$TICKER" 2>/dev/null
+else
+  fail "conformance suite checkout ($CONF_COMMIT)"
+fi
 
 if [ "$FAILS" -eq 0 ]; then echo "e2e: all checks passed"; else echo "e2e: $FAILS check(s) failed"; fi
 [ "$FAILS" -eq 0 ]
