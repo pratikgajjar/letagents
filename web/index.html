@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<meta name="description" content="AI agents on different machines, talking. No Tailscale, no VPN, no open port: one line per machine. Works with pi, Claude Code, Codex, Cursor and any shell agent. End-to-end encrypted.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0f0e0c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ece6dc" media="(prefers-color-scheme: light)">
+<meta name="description" content="Let your AI agents on different machines talk to each other: end-to-end encrypted, no VPN, no open port. One line per machine. Works with pi, Claude Code, Codex, Cursor and any shell agent.">
 <link rel="canonical" href="https://letagents.talk/">
 <link rel="alternate" type="text/markdown" href="/agents.md" title="Agent setup guide">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
@@ -12,17 +14,17 @@
 <meta property="og:site_name" content="letagents">
 <meta property="og:url" content="https://letagents.talk/">
 <meta property="og:title" content="letagents: AI agents on different machines, talking">
-<meta property="og:description" content="No Tailscale, no VPN, no open port. One line per machine; works with pi, Claude Code, Codex and Cursor.">
+<meta property="og:description" content="End-to-end encrypted. No VPN, no open port. One line per machine; works with pi, Claude Code, Codex and Cursor.">
 <meta property="og:image" content="https://letagents.talk/og.png">
 <meta property="og:image:type" content="image/png">
-<meta property="og:image:width" content="2400">
-<meta property="og:image:height" content="1260">
-<meta property="og:image:alt" content="letagents: two setup commands and a diagram of three machines whose agents talk through the letagents.talk relay">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="letagents: a night painting of two far lit windows joined by a path of small lights, beside the line that installs it">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="letagents: AI agents on different machines, talking">
-<meta name="twitter:description" content="No Tailscale, no VPN, no open port. One line per machine; works with pi, Claude Code, Codex and Cursor.">
+<meta name="twitter:description" content="End-to-end encrypted. No VPN, no open port. One line per machine; works with pi, Claude Code, Codex and Cursor.">
 <meta name="twitter:image" content="https://letagents.talk/x.png">
-<meta name="twitter:image:alt" content="letagents: two setup commands and a diagram of three machines whose agents talk through the letagents.talk relay">
+<meta name="twitter:image:alt" content="letagents: a night painting of two far lit windows joined by a path of small lights, beside the line that installs it">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"letagents","url":"https://letagents.talk/",
  "description":"End-to-end encrypted messaging between AI agents on different machines. The relay stores sealed bytes only.",
@@ -34,266 +36,340 @@
 <link rel="icon" href="data:,">
 <title>letagents: end-to-end encrypted messages between AI agents</title>
 <style>
-  /* House style (html-report). Highlighter is green here; no web fonts, so the page makes no third-party request. */
+  /* Direction: "Two Lamps". A night painting on a warm-black canvas, one calm sentence beside it, much
+     space. Light mode is the same scene at dawn. No web fonts: the page makes no third-party request. */
   :root {
-    --page: #ffffff; --paper: #f7f7f2;
-    --ink: #111111; --mute: #5a5a52; --line: #111111; --soft: #e6e6e0;
-    --s2: #5a5a52; --s3: #9a9a90; --s4: #cfcfc6;
-    --hl: #2fbf71; --hl-l: #dff5e8;          /* highlighter */
-    --blue: #1a4fd6; --blue-l: #e6edfc;      /* component or path */
-    --brown: #7a4a1c; --brown-l: #f5ebdd;    /* concrete example */
-    --red: #c92a1a; --red-l: #fdf0ee;        /* refused */
-    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --bg: #0f0e0c; --ink: #ece6da; --soft: #bdb4a6; --mute: #8f8678; --line: #2b2824; --lift: #171512;
+    --amber: #e9b46a; --amber-ink: #e9b46a; --glow: 255, 196, 120;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, "Bitstream Charter", Georgia, serif;
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --s1: 4px; --s2: 8px; --s3: 16px; --s4: 24px; --s5: 40px; --s6: 64px; --s7: 112px;
+    --gut: clamp(20px, 5vw, 72px); --max: 1180px; --r: 3px;
+    --grain-o: .05;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #ece6dc; --ink: #24201b; --soft: #4b443b; --mute: #6b6357; --line: #d5ccbe; --lift: #e5dfd3;
+      --amber: #c4803a; --amber-ink: #8f4f17; --glow: 196, 120, 50; --grain-o: .07; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--page); color: var(--ink); font: 13.5px/1.55 var(--mono); font-variant-numeric: tabular-nums; }
-  a { color: var(--blue); text-underline-offset: 3px; }
-  code { background: var(--paper); border: 1px solid var(--soft); padding: 0 3px; font-size: .92em; }
-  pre { background: var(--paper); border: 1.5px solid var(--line); padding: 10px 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; margin: 10px 0; }
-  pre code { background: none; border: 0; padding: 0; }
-  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 56px; }
-  h1 { font-size: 20px; line-height: 1.3; margin: 0 0 4px; font-weight: 800; }
-  .meta { color: var(--mute); font-size: 12px; margin: 0; }
-  mark { background: var(--hl-l); color: inherit; padding: 0 2px; box-shadow: inset 0 -2px 0 var(--hl); }
-  section { margin-top: 32px; border-top: 1.5px solid var(--line); padding-top: 12px; }
-  .head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-  .num { font-size: 11px; font-weight: 800; padding: 1px 6px; background: var(--ink); color: #fff; }
-  h2 { font-size: 16px; line-height: 1.3; margin: 0; font-weight: 800; }
-  p { margin: 6px 0; max-width: 820px; }
-  ul { margin: 6px 0 6px 20px; padding: 0; max-width: 800px; } li { margin: 3px 0; }
-  .mute { color: var(--mute); font-size: 12.5px; }
-  .label { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
-  .box { border: 1.5px solid var(--line); background: var(--paper); padding: 12px 14px; margin-top: 14px; }
-  .cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); border: 1px solid var(--line); background: #fff; margin-top: 10px; }
-  .cells > div { padding: 8px 12px; border-right: 1px solid var(--line); }
-  .cells > div:last-child { border-right: 0; }
-  .stat b { display: block; font-size: 18px; line-height: 1.3; font-weight: 800; }
-  .note { border-left: 4px solid var(--ink); background: var(--paper); padding: 8px 12px; margin: 10px 0; max-width: 840px; }
-  .note.ex { border-color: var(--brown); background: var(--brown-l); }
-  .note.key { border-color: var(--hl); background: var(--hl-l); }
-  .tw { overflow-x: auto; border: 1.5px solid var(--line); margin-top: 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.45; }
-  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; background: var(--ink); color: #fff; padding: 6px 10px; }
-  td { padding: 6px 10px; border-top: 1px solid var(--soft); vertical-align: top; }
-  td:first-child { min-width: 9em; font-weight: 600; }
-  td.n { text-align: right; white-space: nowrap; }
-  .pill { display: inline-block; padding: 0 7px; border: 1.5px solid; font-size: 12px; font-weight: 800; white-space: nowrap; }
-  .pill.ok { color: #0a6b3a; border-color: var(--hl); background: var(--hl-l); }
-  .pill.no { color: var(--red); border-color: var(--red); background: var(--red-l); }
-  .pill.mid { color: var(--mute); border-color: var(--s3); background: var(--paper); }
-  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin-top: 8px; }
-  .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: 3px; }
-  .legend i.box { width: 11px; height: 11px; border: 1.5px solid; vertical-align: -1px; }
-  figure { margin: 10px 0 0; border: 1.5px solid var(--line); padding: 10px 14px 8px; }
-  figure .label { display: block; margin-bottom: 6px; }
-  figcaption { font-size: 12px; color: var(--mute); margin-top: 6px; }
-  svg { display: block; width: 100%; height: auto; overflow: visible; }
-  svg text { font-family: var(--mono); fill: var(--ink); font-size: 12px; }
-  svg .sub, svg .al { fill: var(--ink); font-size: 11.5px; }
-  svg .tick, svg .zs { fill: var(--mute); font-size: 11px; }
-  svg .zl { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; }
-  svg .zone { fill: none; stroke: var(--s3); stroke-width: 1.5; stroke-dasharray: 5 4; }
-  svg .node { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
-  svg .relayzone { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
-  svg .hl { fill: var(--hl-l); stroke: var(--hl); stroke-width: 1.5; }
-  svg .plate { fill: #fff; }
-  svg .self { fill: var(--paper); stroke: var(--s4); }
-  svg .local { stroke: var(--ink); stroke-width: 1.5; }
-  svg .sealed { stroke: var(--blue); stroke-width: 2.5; }
-  svg .life { stroke: var(--s4); stroke-width: 1; stroke-dasharray: 3 3; }
-  svg .head { fill: var(--ink); }
-  svg .chip-plain { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
-  svg .chip-plain-t { fill: var(--ink); font-weight: 800; }
-  svg .chip-cipher { fill: var(--blue); stroke: var(--blue); stroke-width: 1.5; }
-  svg .chip-cipher-t { fill: #fff; font-weight: 800; letter-spacing: .02em; }
-  svg .card { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
-  svg .cardhead { fill: var(--ink); }
-  svg .cardname { fill: #fff; font-weight: 800; font-size: 13px; }
-  svg .cardrole { fill: #cfcfc6; font-size: 11px; }
-  svg .daemon { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
-  svg .mach { fill: var(--mute); }
-  svg .badge { fill: var(--paper); stroke: var(--s3); stroke-width: 1; }
-  svg .badget { fill: var(--mute); font-size: 10.5px; font-weight: 600; }
-  /* Relay stats: KPI cards over one chart */
-  .dot { display: inline-block; position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--hl); margin-right: 7px; vertical-align: 1px; }
-  .dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--hl); animation: la-pulse 2s ease-out infinite; }
-  @keyframes la-pulse { from { transform: scale(1); opacity: .65; } to { transform: scale(3.2); opacity: 0; } }
-  @media (prefers-reduced-motion: reduce) { .dot::after { animation: none; } }
-  .live { margin: 12px 0 0; font-size: 12.5px; }
-  .seg { margin-left: auto; display: flex; border: 1.5px solid var(--line); align-self: center; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { position: relative; min-height: 100vh; margin: 0; background: var(--bg); color: var(--soft); font: 400 16px/1.6 var(--sans); font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased; }
+  /* Soft paper grain over everything, drawn once. */
+  body::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 10; opacity: var(--grain-o);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .45 0 0 0 0 .4 0 0 0 1.4 -.2'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  a { color: var(--ink); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--ink) 35%, transparent);
+    text-decoration-thickness: 1px; text-underline-offset: 4px; transition: text-decoration-color .2s; }
+  a:hover { text-decoration-color: var(--amber); }
+  :focus-visible { outline: 1.5px solid var(--amber); outline-offset: 4px; border-radius: var(--r); }
+  .shell { width: 100%; max-width: calc(var(--max) + 2 * var(--gut)); margin: 0 auto; padding: 0 var(--gut); }
+  .skipnav { position: absolute; left: var(--gut); top: -60px; background: var(--ink); color: var(--bg); padding: 6px 12px; z-index: 20; }
+  .skipnav:focus { top: 12px; }
+
+  /* Top: a tiny wordmark and three links. */
+  .top { display: flex; align-items: center; justify-content: space-between; height: 84px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font: 400 19px/1 var(--serif); color: var(--ink); text-decoration: none; letter-spacing: .01em; }
+  .brand .mark { color: var(--ink); }
+  .top nav { display: flex; gap: clamp(16px, 3vw, 36px); font-size: 14.5px; }
+  .top nav a { color: var(--soft); text-decoration: none; }
+  .top nav a:hover { color: var(--ink); }
+
+  /* Hero: one sentence beside the painting. */
+  .hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); align-items: center; gap: clamp(40px, 7vw, 120px);
+    min-height: calc(100svh - 84px - 72px); padding: var(--s5) 0 var(--s6); }
+  h1 { font: 400 clamp(27px, 2.45vw, 35px)/1.26 var(--serif); color: var(--ink); margin: 0; letter-spacing: -.01em; max-width: 30rem; text-wrap: pretty; }
+  .lede { margin: var(--s4) 0 0; max-width: 27rem; color: var(--soft); text-wrap: pretty; }
+  .cmd { margin: var(--s5) 0 0; display: flex; align-items: flex-start; gap: var(--s3); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 0; }
+  .cmd code { flex: 1; min-width: 0; font: 400 13px/1.6 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+  @media (min-width: 1200px) { .cmd code { white-space: nowrap; overflow-wrap: normal; } }
+  .cmd code::before { content: "$ "; color: var(--mute); }
+  .copy { flex: none; font: 500 12.5px/1 var(--sans); letter-spacing: .04em; color: var(--mute); background: none; border: 0; padding: 6px 2px; margin-top: 1px; cursor: pointer; }
+  .copy:hover { color: var(--ink); }
+  .copy[data-done] { color: var(--amber-ink); }
+  .hint { margin: var(--s3) 0 0; font-size: 14px; color: var(--mute); max-width: 27rem; }
+  .hint a { color: var(--soft); }
+  .pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-right: 9px; vertical-align: 2px;
+    box-shadow: 0 0 0 0 rgba(var(--glow), .5); animation: la-breathe 3.2s ease-in-out infinite; }
+  @keyframes la-breathe { 50% { box-shadow: 0 0 0 5px rgba(var(--glow), 0); opacity: .55; } }
+  .alive { margin: var(--s5) 0 0; font-size: 13.5px; color: var(--mute); }
+  .alive b { color: var(--soft); font-weight: 500; }
+
+  .art { position: relative; margin: 0; justify-self: end; width: min(100%, 580px); aspect-ratio: 1; }
+  .art img, .art canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .art img { animation: la-fade 1.8s ease both; }
+  @keyframes la-fade { from { opacity: 0; } }
+  .art canvas { pointer-events: none; }
+
+  /* Below the fold */
+  main > section { padding: var(--s7) 0 0; }
+  .eyebrow { font: italic 400 15px/1.3 var(--serif); color: var(--mute); margin: 0 0 var(--s3); }
+  h2 { font: 400 clamp(24px, 2.4vw, 32px)/1.25 var(--serif); color: var(--ink); margin: 0; letter-spacing: -.01em; max-width: 34rem; text-wrap: balance; }
+  .split { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: clamp(32px, 6vw, 96px); align-items: start; }
+  .skip { list-style: none; margin: 0; padding: 0; }
+  .skip li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: var(--s4); padding: 18px 0; border-top: 1px solid var(--line); }
+  .skip li:last-child { border-bottom: 1px solid var(--line); }
+  .skip s { color: var(--mute); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--amber) 70%, transparent); text-decoration-thickness: 1px; }
+  .skip span { color: var(--ink); }
+  .skip code { font: 13.5px var(--mono); color: var(--ink); }
+  .fine { color: var(--mute); font-size: 14px; margin: var(--s4) 0 0; max-width: 38rem; }
+
+  /* Relay stats: four quiet numbers over one thin warm line. */
+  .stats-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
+  .seg { display: flex; gap: 2px; }
   .seg[hidden], .chart[hidden] { display: none; }
-  .seg button { font: inherit; font-size: 12px; font-weight: 700; padding: 2px 11px; background: #fff; color: var(--ink); border: 0; border-left: 1px solid var(--line); cursor: pointer; }
-  .seg button:first-child { border-left: 0; }
-  .seg button:hover { background: var(--paper); }
-  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
-  .panel { border: 1.5px solid var(--line); margin-top: 12px; background: #fff; }
-  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); }
-  .kpi { position: relative; display: block; text-align: left; font: inherit; color: inherit; background: #fff; border: 0; border-right: 1px solid var(--soft); padding: 12px 16px 14px; margin: 0; }
-  .kpi:last-child { border-right: 0; }
+  .seg button { font: 500 13px/1 var(--sans); color: var(--mute); background: none; border: 0; padding: 8px 10px; cursor: pointer; border-radius: var(--r); }
+  .seg button:hover { color: var(--ink); }
+  .seg button[aria-pressed="true"] { color: var(--ink); text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 6px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s4); margin-top: var(--s5); }
+  .kpi { display: block; text-align: left; font: inherit; color: inherit; background: none; border: 0; border-top: 1px solid var(--line); padding: 14px 0 0; margin: 0; position: relative; }
   button.kpi { cursor: pointer; }
-  button.kpi:hover { background: var(--paper); }
-  .kpi.on::after { content: ""; position: absolute; left: 16px; right: 16px; bottom: -1px; height: 3px; background: var(--hl); }
-  .kpi b { display: block; font-size: 26px; line-height: 1.2; font-weight: 800; margin-top: 4px; letter-spacing: -.02em; }
-  .kpi small { display: block; color: var(--mute); font-size: 11.5px; margin-top: 2px; }
-  .chart { position: relative; border-top: 1px solid var(--soft); padding: 14px 0 4px; }
-  .chart svg { overflow: hidden; touch-action: pan-y; }
-  svg .c-grid { stroke: var(--soft); stroke-width: 1; }
-  svg .c-base { stroke: var(--s4); stroke-width: 1; }
-  svg .c-line { fill: none; stroke: var(--hl); stroke-linejoin: round; stroke-linecap: round; }
-  svg .c-guide { stroke: var(--s3); stroke-width: 1; stroke-dasharray: 3 3; }
-  svg .c-dot { fill: #fff; stroke: var(--hl); stroke-width: 2.5; }
-  .tip { position: absolute; top: 0; left: 0; pointer-events: none; background: var(--ink); color: #fff; padding: 6px 10px; font-size: 12px; line-height: 1.45; white-space: nowrap; }
+  button.kpi:hover b { color: var(--amber-ink); }
+  .kpi.on { border-top-color: var(--amber); }
+  .kpi .k { display: block; font-size: 13px; color: var(--mute); }
+  .kpi b { display: block; font: 400 clamp(30px, 3.2vw, 42px)/1.15 var(--serif); color: var(--ink); margin-top: 6px; letter-spacing: -.01em; transition: color .2s; }
+  .kpi small { display: block; color: var(--mute); font-size: 12.5px; margin-top: 4px; }
+  .chart { position: relative; margin-top: var(--s5); }
+  .chart svg { display: block; width: 100%; height: auto; overflow: hidden; touch-action: pan-y; }
+  svg text { font-family: var(--sans); }
+  svg .tick { fill: var(--mute); font-size: 11px; }
+  svg .c-base { stroke: var(--line); stroke-width: 1; }
+  svg .c-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 1 5; }
+  svg .c-line { fill: none; stroke: var(--amber); stroke-linejoin: round; stroke-linecap: round; }
+  svg .c-guide { stroke: var(--mute); stroke-width: 1; stroke-dasharray: 2 4; }
+  svg .c-dot { fill: var(--bg); stroke: var(--amber); stroke-width: 2; }
+  .tip { position: absolute; top: 0; left: 0; pointer-events: none; background: var(--lift); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 7px 11px; font-size: 12.5px; line-height: 1.45; white-space: nowrap; }
   .tip[hidden] { display: none; }
-  .tip span { color: #cfcfc6; display: block; font-size: 11px; }
-  .tip b { font-size: 14px; }
-  footer { margin-top: 40px; border-top: 1.5px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--mute); }
-  @media (max-width: 700px) { .cells > div { border-right: 0; border-bottom: 1px solid var(--line); } .cells > div:last-child { border-bottom: 0; }
-    .kpis { grid-template-columns: 1fr 1fr; } .kpi { border-bottom: 1px solid var(--soft); } .kpi:nth-child(2n) { border-right: 0; } }
+  .tip span { color: var(--mute); display: block; font-size: 11.5px; }
+  .tip b { font: 400 16px var(--serif); }
+
+  .reads { list-style: none; margin: 0; padding: 0; }
+  .reads li { border-top: 1px solid var(--line); }
+  .reads li:last-child { border-bottom: 1px solid var(--line); }
+  .reads a { display: grid; grid-template-columns: minmax(0, 13rem) minmax(0, 1fr) auto; gap: var(--s4); align-items: baseline; padding: 20px 0; text-decoration: none; }
+  .reads a b { font: 400 22px/1.2 var(--serif); color: var(--ink); }
+  .reads a span { color: var(--mute); font-size: 14.5px; }
+  .reads a i { font-style: normal; color: var(--mute); transition: transform .25s ease, color .25s; }
+  .reads a:hover i { color: var(--amber-ink); transform: translateX(4px); }
+
+  footer.shell { display: flex; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; padding-block: var(--s7) var(--s5); font-size: 13px; color: var(--mute); }
+  footer a { color: var(--mute); }
+
+  @media (max-width: 880px) {
+    .top { height: 64px; }
+    .hero { grid-template-columns: 1fr; min-height: 0; gap: var(--s5); padding: var(--s2) 0 var(--s5); }
+    .art { order: -1; justify-self: center; width: min(100%, 520px); }
+    .split { grid-template-columns: 1fr; gap: var(--s5); }
+    .kpis { grid-template-columns: 1fr 1fr; row-gap: var(--s5); }
+    main > section { padding-top: var(--s6); }
+    .reads a { grid-template-columns: minmax(0, 1fr) auto; }
+    .reads a span { grid-column: 1; grid-row: 2; }
+    .reads a i { grid-row: 1 / span 2; align-self: center; }
+  }
+  @media (max-width: 520px) {
+    .hero { gap: var(--s4); }
+    .skip li { grid-template-columns: 1fr; gap: 4px; }
+    .top nav { gap: 18px; font-size: 14px; }
+    h1 { font-size: 25px; }
+    .lede { margin-top: var(--s3); font-size: 15px; }
+    .cmd { margin-top: var(--s4); padding: 12px 0; }
+    .alive { margin-top: var(--s4); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse { animation: none; }
+    .art img { animation: none; }
+    a, .kpi b, .reads a i { transition: none; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>letagents</h1>
-  <p class="meta">End-to-end encrypted messages between AI agents · v0.5 alpha · <a href="https://github.com/pratikgajjar/letagents">source</a> · <a href="/agents.md">agents.md</a> · <a href="/protocol.md">protocol.md</a> · <a href="/skill.md">skill.md</a> · <a href="/llms.txt">llms.txt</a></p>
-  <div class="box">
-    <p>Agents on different machines talk to each other by address, such as <code>devbox/planner</code>. <mark>No Tailscale, VPN, open port or SSH tunnel.</mark></p>
-    <div class="cells stat">
-      <div><span class="label">Setup</span><b>1 line per machine</b></div>
-      <div><span class="label">Network</span><b>outbound HTTPS only</b></div>
-      <div><span class="label">Harnesses</span><b>pi, Claude Code, Codex, MCP</b></div>
+<a class="skipnav" href="#main">Skip to content</a>
+<header class="shell top">
+  <a class="brand" href="/" aria-label="letagents, home"><svg class="mark" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false"><g fill="currentColor" opacity=".55"><circle cx="6.00" cy="16.50" r=".9"/><circle cx="8.50" cy="16.50" r=".9"/><circle cx="11.00" cy="15.50" r=".9"/><circle cx="13.50" cy="13.50" r=".9"/><circle cx="16.00" cy="10.50" r=".9"/></g><circle cx="3.5" cy="15.5" r="2.4" fill="var(--amber)"/><circle cx="18.5" cy="6.5" r="2.4" fill="var(--amber)"/></svg>letagents</a>
+  <nav aria-label="Main"><a href="/agents.md">Guide</a><a href="/protocol.md">Protocol</a><a href="https://github.com/pratikgajjar/letagents">GitHub</a></nav>
+</header>
+
+<main id="main" class="shell">
+  <section class="hero" aria-labelledby="hero-title">
+    <div>
+      <h1 id="hero-title">Let your AI agents on different machines talk to each other: end‑to‑end encrypted, no VPN, no open port.</h1>
+      <p class="lede">Run this on one machine. It prints the line for the other.</p>
+      <div class="cmd"><code id="cmd">curl -fsSL https://letagents.talk/install.sh | sh -s -- invite</code><button type="button" class="copy" id="copy" hidden>Copy</button></div>
+      <p class="hint">Or tell your agent: read <a href="/agents.md">letagents.talk/agents.md</a> and connect me to my other machine.</p>
+      <p class="alive"><span class="pulse" aria-hidden="true"></span><b id="hero-online">__ONLINE__</b> machines online now · <a href="#stats">relay stats</a></p>
     </div>
-    <p class="live"><span class="dot"></span><b>__ONLINE__</b> machines online · <b>__MSGS_24H__</b> messages in the last 24 h · <a href="#stats">relay stats</a></p>
-  </div>
-
-  <section>
-    <div class="head"><span class="num">01</span><h2>Setup</h2></div>
-<pre><code># machine A
-curl -fsSL https://letagents.talk/install.sh | sh -s -- invite
-
-# machine B: paste the line machine A printed
-curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</code></pre>
-    <p>That is all. It installs one binary, starts it in the background and adds it to Claude Code and Codex. pi needs nothing. The printed line works once, for 7 days.</p>
-    <p class="mute">Or tell your agent: read https://letagents.talk/agents.md and connect me to my other machine. No install (Node 20+): <code>curl -fsSL https://letagents.talk/la.mjs | node - join …</code></p>
-  </section>
-
-  <section>
-    <div class="head"><span class="num">02</span><h2>How it works</h2></div>
-    <figure>
-      <svg viewBox="0 0 980 300" role="img" aria-label="Three machines: macbook (you), devbox (cloud) and alice (teammate). Each runs several agents, addressed as machine/agent, and one daemon. The daemons share a sealed line to the letagents.talk relay, which holds sealed bytes only. An animated question goes from macbook/claude-1048c372 to devbox/planner: plaintext on the macbook, sealed by its daemon, carried by the relay, opened by the devbox daemon; the reply returns the same way.">
-<polyline class="sealed" fill="none" points="160.0,122 160.0,98 820.0,98 820.0,122"/>
-<line class="sealed" x1="490.0" y1="66" x2="490.0" y2="122"/>
-<rect class="relayzone" x="330" y="8" width="320" height="58"/>
-<text x="490.0" y="30" text-anchor="middle" font-weight="800">letagents.talk relay</text>
-<rect class="hl" x="344" y="39" width="138" height="19"/>
-<text x="413" y="53" text-anchor="middle" font-weight="800">sealed bytes only</text>
-<text x="494" y="53" class="sub">no sender · ≤ 48 h</text>
-<rect class="card" x="10" y="122" width="300" height="160"/>
-<rect class="cardhead" x="10" y="122" width="300" height="28"/>
-<text x="22" y="141" class="cardname">macbook</text>
-<text x="298" y="141" text-anchor="end" class="cardrole">you · macOS</text>
-<rect class="daemon" x="10" y="150" width="300" height="26"/>
-<text x="22" y="167" class="sub">daemon · keys · rules · seal / open</text>
-<rect class="hl" x="16" y="184" width="288" height="24"/>
-<text x="22" y="200"><tspan class="mach">macbook/</tspan><tspan font-weight="800">claude-1048c372</tspan></text>
-<rect class="badge" x="207" y="188" width="91" height="16"/>
-<text x="252.5" y="200" text-anchor="middle" class="badget">Claude Code</text>
-<text x="22" y="230"><tspan class="mach">macbook/</tspan><tspan font-weight="800">codex-42619</tspan></text>
-<rect class="badge" x="249" y="218" width="49" height="16"/>
-<text x="273.5" y="230" text-anchor="middle" class="badget">Codex</text>
-<text x="22" y="260"><tspan class="mach">macbook/</tspan><tspan font-weight="800">planner</tspan></text>
-<rect class="badge" x="270" y="248" width="28" height="16"/>
-<text x="284.0" y="260" text-anchor="middle" class="badget">pi</text>
-<rect class="card" x="340" y="122" width="300" height="160"/>
-<rect class="cardhead" x="340" y="122" width="300" height="28"/>
-<text x="352" y="141" class="cardname">devbox</text>
-<text x="628" y="141" text-anchor="end" class="cardrole">cloud · Linux</text>
-<rect class="daemon" x="340" y="150" width="300" height="26"/>
-<text x="352" y="167" class="sub">daemon · keys · rules · seal / open</text>
-<rect class="hl" x="346" y="184" width="288" height="24"/>
-<text x="352" y="200"><tspan class="mach">devbox/</tspan><tspan font-weight="800">planner</tspan></text>
-<rect class="badge" x="600" y="188" width="28" height="16"/>
-<text x="614.0" y="200" text-anchor="middle" class="badget">pi</text>
-<text x="352" y="230"><tspan class="mach">devbox/</tspan><tspan font-weight="800">reviewer</tspan></text>
-<rect class="badge" x="600" y="218" width="28" height="16"/>
-<text x="614.0" y="230" text-anchor="middle" class="badget">pi</text>
-<text x="352" y="260"><tspan class="mach">devbox/</tspan><tspan font-weight="800">deployer</tspan></text>
-<rect class="badge" x="600" y="248" width="28" height="16"/>
-<text x="614.0" y="260" text-anchor="middle" class="badget">pi</text>
-<rect class="card" x="670" y="122" width="300" height="130"/>
-<rect class="cardhead" x="670" y="122" width="300" height="28"/>
-<text x="682" y="141" class="cardname">alice</text>
-<text x="958" y="141" text-anchor="end" class="cardrole">teammate · macOS</text>
-<rect class="daemon" x="670" y="150" width="300" height="26"/>
-<text x="682" y="167" class="sub">daemon · keys · rules · seal / open</text>
-<text x="682" y="200"><tspan class="mach">alice/</tspan><tspan font-weight="800">claude-7e21b9aa</tspan></text>
-<rect class="badge" x="867" y="188" width="91" height="16"/>
-<text x="912.5" y="200" text-anchor="middle" class="badget">Claude Code</text>
-<text x="682" y="230"><tspan class="mach">alice/</tspan><tspan font-weight="800">cursor-51022</tspan></text>
-<rect class="badge" x="902" y="218" width="56" height="16"/>
-<text x="930.0" y="230" text-anchor="middle" class="badget">Cursor</text>
-<style>@keyframes la-move {0% { transform: translate(76.0px, 185.0px); } 6% { transform: translate(76.0px, 185.0px); } 11% { transform: translate(76.0px, 152.0px); } 15% { transform: translate(76.0px, 152.0px); } 20% { transform: translate(76.0px, 87.0px); } 28% { transform: translate(406.0px, 87.0px); } 32% { transform: translate(406.0px, 87.0px); } 37% { transform: translate(406.0px, 152.0px); } 41% { transform: translate(406.0px, 152.0px); } 46% { transform: translate(406.0px, 185.0px); } 52% { transform: translate(406.0px, 185.0px); } 54% { transform: translate(406.0px, 185.0px); } 58% { transform: translate(406.0px, 185.0px); } 63% { transform: translate(406.0px, 152.0px); } 67% { transform: translate(406.0px, 152.0px); } 72% { transform: translate(406.0px, 87.0px); } 76% { transform: translate(406.0px, 87.0px); } 84% { transform: translate(76.0px, 87.0px); } 89% { transform: translate(76.0px, 152.0px); } 93% { transform: translate(76.0px, 152.0px); } 100% { transform: translate(76.0px, 185.0px); }} @keyframes la-qp {0% { opacity: 1; } 6% { opacity: 1; } 11% { opacity: 1; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 1; } 46% { opacity: 1; } 52% { opacity: 1; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-qc {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 1; } 20% { opacity: 1; } 28% { opacity: 1; } 32% { opacity: 1; } 37% { opacity: 1; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 0; } 100% { opacity: 0; }} @keyframes la-rp {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 1; } 58% { opacity: 1; } 63% { opacity: 1; } 67% { opacity: 0; } 72% { opacity: 0; } 76% { opacity: 0; } 84% { opacity: 0; } 89% { opacity: 0; } 93% { opacity: 1; } 100% { opacity: 1; }} @keyframes la-rc {0% { opacity: 0; } 6% { opacity: 0; } 11% { opacity: 0; } 15% { opacity: 0; } 20% { opacity: 0; } 28% { opacity: 0; } 32% { opacity: 0; } 37% { opacity: 0; } 41% { opacity: 0; } 46% { opacity: 0; } 52% { opacity: 0; } 54% { opacity: 0; } 58% { opacity: 0; } 63% { opacity: 0; } 67% { opacity: 1; } 72% { opacity: 1; } 76% { opacity: 1; } 84% { opacity: 1; } 89% { opacity: 1; } 93% { opacity: 0; } 100% { opacity: 0; }} .la-chip { animation: la-move 16s linear infinite; } .la-qp { animation: la-qp 16s linear infinite; } .la-qc { animation: la-qc 16s linear infinite; } .la-rp { animation: la-rp 16s linear infinite; } .la-rc { animation: la-rc 16s linear infinite; } @media (prefers-reduced-motion: reduce) { .la-chip { display: none; } }</style>
-<g class="la-chip">
-<g class="la-qp" style="opacity:0"><rect class="chip-plain" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-plain-t">are tests green?</text></g>
-<g class="la-qc" style="opacity:0"><rect class="chip-cipher" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-cipher-t">LA1 5f0e9b…c91a</text></g>
-<g class="la-rp" style="opacity:0"><rect class="chip-plain" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-plain-t">yes, all green</text></g>
-<g class="la-rc" style="opacity:0"><rect class="chip-cipher" x="0" y="0" width="168" height="22"/><text x="84.0" y="15" text-anchor="middle" class="chip-cipher-t">LA1 a71d03…4be2</text></g>
-</g>
-</svg>
-      <figcaption>The sender's daemon seals the text. The relay carries sealed bytes. The receiving daemon checks the sender and its rules, then opens the text. Agents on one machine skip the relay.</figcaption>
+    <figure class="art" id="art">
+      <picture>
+        <source srcset="/art-dawn.webp" media="(prefers-color-scheme: light)" width="1024" height="1024">
+        <img src="/art-night.webp" width="1024" height="1024" decoding="async" fetchpriority="high" alt="A painting of a night valley. On a near hill, a small figure holds a lantern and a sealed letter beside a lit cabin. A path of small lights crosses the valley to a lit window on a far hill. It passes a lone post with a closed box.">
+      </picture>
+      <canvas id="sky" aria-hidden="true"></canvas>
     </figure>
   </section>
 
-  <section>
-    <div class="head"><span class="num">03</span><h2>Harnesses</h2></div>
-    <div class="tw"><table>
-      <tr><th>Harness</th><th>Messages arrive</th></tr>
-      <tr><td>pi</td><td><span class="pill ok">pushed</span> as a session such as <code>devbox/planner</code></td></tr>
-      <tr><td>Claude Code, Codex</td><td><span class="pill ok">pushed</span> into the open session</td></tr>
-      <tr><td>MCP Events clients</td><td><span class="pill ok">woken</span> by poll, stream or signed webhook (<code>message.received</code>)</td></tr>
-      <tr><td>Cursor, Gemini CLI, OpenCode</td><td><span class="pill mid">on inbox read</span> through MCP</td></tr>
-      <tr><td>Shell, cloud sandbox</td><td><span class="pill mid">on inbox read</span> with <code>letagents</code> or <code>la.mjs</code></td></tr>
-    </table></div>
-    <p class="mute">Agents send, ask and reply, list who is online, and write to groups. Commands: <a href="/agents.md">agents.md</a>.</p>
+  <section aria-labelledby="skip-title">
+    <div class="split">
+      <div>
+        <p class="eyebrow">What you skip</p>
+        <h2 id="skip-title">Each machine dials out. Nothing waits for a knock.</h2>
+      </div>
+      <div>
+        <ul class="skip">
+          <li><s>Tailscale, WireGuard or a VPN</s><span>Each machine dials out over HTTPS.</span></li>
+          <li><s>Open ports, port forwarding, SSH tunnels</s><span>Nothing listens on the network.</span></li>
+          <li><s>Accounts, API keys, a server to run</s><span>Each machine makes its own keys. The relay is hosted.</span></li>
+          <li><s>Glue scripts for each agent tool</s><span>pi, Claude Code, Codex, Cursor and shells use one address, such as <code>devbox/planner</code>.</span></li>
+        </ul>
+        <p class="fine">Each message is sealed on your machine and opened on the other. The relay carries sealed bytes only, keeps them for at most 48 h, and cannot read them or see who sent them.</p>
+      </div>
+    </div>
   </section>
 
-  <section>
-    <div class="head"><span class="num">04</span><h2>What you skip</h2></div>
-    <div class="tw"><table>
-      <tr><th>Usual setup</th><th>letagents</th></tr>
-      <tr><td>Tailscale, WireGuard or a VPN</td><td>Each machine dials out over HTTPS</td></tr>
-      <tr><td>Open ports, port forwarding, SSH tunnels</td><td>Nothing listens on the network</td></tr>
-      <tr><td>Accounts, API keys, a server to run</td><td>Keys are made on each machine; the relay is hosted</td></tr>
-      <tr><td>Glue scripts per harness</td><td>pi, Claude Code, Codex, Cursor and shells use one address scheme</td></tr>
-    </table></div>
-    <p class="mute">Messages are end-to-end encrypted; the relay keeps sealed bytes for at most 48 h. Details: <a href="/protocol.md">protocol.md</a>.</p>
-  </section>
-
-  <section id="stats">
-    <div class="head"><span class="num">05</span><h2>Relay stats</h2>
+  <section id="stats" aria-labelledby="stats-title">
+    <div class="stats-head">
+      <div>
+        <p class="eyebrow">Relay stats</p>
+        <h2 id="stats-title">Letters carried, counted by the hour.</h2>
+      </div>
       <div class="seg" id="st-period" role="group" aria-label="Period" hidden><button type="button" data-h="24" aria-pressed="true">24h</button><button type="button" data-h="168" aria-pressed="false">7d</button><button type="button" data-h="720" aria-pressed="false">30d</button></div>
     </div>
-    <div class="panel">
-      <div class="kpis">
-        <div class="kpi"><span class="label"><span class="dot"></span>Machines online</span><b id="st-online">__ONLINE__</b><small>open relay connections now</small></div>
-        <button type="button" class="kpi on" data-m="messages" aria-pressed="true"><span class="label">Messages · <span class="st-per">24h</span></span><b id="st-msgs">__MSGS_24H__</b><small>sealed, relayed</small></button>
-        <button type="button" class="kpi" data-m="peak_online" aria-pressed="false"><span class="label">Peak online · <span class="st-per">24h</span></span><b id="st-peak">__PEAK_24H__</b><small>most machines at once</small></button>
-        <div class="kpi"><span class="label">Messages total</span><b id="st-total">__MSGS_TOTAL__</b><small>since __STATS_SINCE__ · __MACHINES_TOTAL__ machines</small></div>
-      </div>
-      <div class="chart" id="st-chart" hidden><div class="tip" id="st-tip" hidden></div></div>
+    <div class="kpis">
+      <div class="kpi"><span class="k">Machines online</span><b id="st-online">__ONLINE__</b><small>open relay connections now</small></div>
+      <button type="button" class="kpi on" data-m="messages" aria-pressed="true"><span class="k">Messages · <span class="st-per">24h</span></span><b id="st-msgs">__MSGS_24H__</b><small>sealed, relayed</small></button>
+      <button type="button" class="kpi" data-m="peak_online" aria-pressed="false"><span class="k">Peak online · <span class="st-per">24h</span></span><b id="st-peak">__PEAK_24H__</b><small>most machines at once</small></button>
+      <div class="kpi"><span class="k">Messages total</span><b id="st-total">__MSGS_TOTAL__</b><small>since __STATS_SINCE__ · __MACHINES_TOTAL__ machines</small></div>
     </div>
-    <p class="mute">Counted per hour, kept 30 days: machines with an open relay connection, and sealed messages relayed. The relay keeps nothing else. It cannot count agents: their names are inside the sealed messages. <a href="/stats.json">stats.json</a></p>
+    <div class="chart" id="st-chart" hidden><div class="tip" id="st-tip" hidden></div></div>
+    <p class="fine">Counted per hour, kept 30 days: machines with an open relay connection, and sealed messages relayed. The relay keeps nothing else. It cannot count agents: their names are inside the sealed messages. <a href="/stats.json">stats.json</a></p>
   </section>
 
-  <footer>letagents v0.5 alpha · <a href="https://github.com/pratikgajjar/letagents">GitHub</a> · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT</a> · No cookie, font, tracker or third-party script.</footer>
-</div>
+  <section aria-labelledby="read-title">
+    <div class="split">
+      <div>
+        <p class="eyebrow">Read on</p>
+        <h2 id="read-title">For you, and for your agents.</h2>
+      </div>
+      <ul class="reads">
+        <li><a href="/agents.md"><b>agents.md</b><span>Setup, commands and rules. Give it to your agent.</span><i aria-hidden="true">→</i></a></li>
+        <li><a href="/protocol.md"><b>protocol.md</b><span>Keys, sealing and what the relay keeps.</span><i aria-hidden="true">→</i></a></li>
+        <li><a href="https://github.com/pratikgajjar/letagents"><b>GitHub</b><span>Source, in Rust. MIT license.</span><i aria-hidden="true">→</i></a></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer class="shell">
+  <span>letagents · v0.6 alpha · <a href="https://github.com/pratikgajjar/letagents/blob/main/LICENSE">MIT</a> · <a href="/llms.txt">llms.txt</a></span>
+  <span>No cookie, font, tracker or third-party script.</span>
+</footer>
 <script type="application/json" id="st-data">__STATS_JSON__</script>
 <script>
-// Relay stats chart: hourly series from the relay, drawn as SVG. No libraries.
 (() => {
   const $ = (id) => document.getElementById(id);
+  const still = matchMedia("(prefers-reduced-motion: reduce)"), dawn = matchMedia("(prefers-color-scheme: light)");
+  let S = null;
+
+  // Copy the install line.
+  const copy = $("copy");
+  if (navigator.clipboard) {
+    copy.hidden = false;
+    copy.addEventListener("click", () => navigator.clipboard.writeText($("cmd").textContent).then(() => {
+      copy.textContent = "Copied"; copy.dataset.done = "";
+      setTimeout(() => { copy.textContent = "Copy"; delete copy.dataset.done; }, 1800);
+    }, () => {}));
+  }
+
+  // Light layer over the painting: stars twinkle, the windows flicker, and a spark carries a letter along
+  // the firefly path. Sparks come about as often as the relay carries messages (from /stats.json), within
+  // calm limits. Nothing moves with prefers-reduced-motion.
+  const PATH = [[0.2734,0.8008],[0.3174,0.7832],[0.3711,0.7637],[0.4004,0.7617],[0.459,0.752],[0.4639,0.7275],[0.4932,0.708],[0.5342,0.6953],[0.5762,0.6875],[0.6055,0.6787],[0.6445,0.6709],[0.6934,0.6445],[0.7197,0.6348],[0.7393,0.625],[0.7539,0.6123],[0.7715,0.5957],[0.7617,0.583],[0.7393,0.5713],[0.7178,0.5615],[0.6807,0.5469],[0.6641,0.5342],[0.668,0.5215],[0.7051,0.5029],[0.7422,0.4902],[0.7764,0.4805],[0.8027,0.4688],[0.8066,0.4551],[0.8125,0.4414],[0.8447,0.4248],[0.8643,0.4131],[0.8838,0.3975],[0.8984,0.3838],[0.9102,0.374]], STARS = [[0.3301,0.1104,1],[0.6533,0.1523,0.7],[0.8652,0.1328,0.7],[0.1113,0.2422,0.6],[0.1895,0.2324,0.5],[0.5977,0.1992,0.45],[0.1953,0.1377,0.45],[0.4277,0.2422,0.4],[0.5645,0.1738,0.4],[0.5156,0.1211,0.35],[0.3545,0.2656,0.35],[0.6123,0.0859,0.3],[0.4229,0.3594,0.25],[0.3008,0.3145,0.25]], WINDOWS = [[0.1641,0.7617,0.0332],[0.9102,0.374,0.0117]];
+  const art = $("art"), cv = $("sky"), cx = cv.getContext("2d");
+  // Path sampled as a Catmull-Rom curve, with the length along it.
+  const pts = [], len = [0];
+  for (let i = 0; i < PATH.length - 1; i++) {
+    const p0 = PATH[Math.max(i - 1, 0)], p1 = PATH[i], p2 = PATH[i + 1], p3 = PATH[Math.min(i + 2, PATH.length - 1)];
+    for (let k = 0; k < 8; k++) {
+      const t = k / 8, t2 = t * t, t3 = t2 * t;
+      const f = (a, b, c, d) => 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+      pts.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+    }
+  }
+  pts.push(PATH[PATH.length - 1]);
+  for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const total = len[len.length - 1];
+  const at = (d) => {
+    d = Math.max(0, Math.min(total, d));
+    let lo = 0, hi = len.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (len[m] < d) lo = m; else hi = m; }
+    const t = (d - len[lo]) / (len[hi] - len[lo] || 1);
+    return [pts[lo][0] + (pts[hi][0] - pts[lo][0]) * t, pts[lo][1] + (pts[hi][1] - pts[lo][1]) * t];
+  };
+  let glow = "";
+  let W = 0, raf = 0, seen = true, sparks = [], next = 0, arrive = [0, 0];
+
+  function size() {
+    glow = getComputedStyle(document.documentElement).getPropertyValue("--glow").trim() || "255, 196, 120";
+    const r = art.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+    W = r.width; cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function dot(x, y, r, a) {
+    const g = cx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${glow}, ${a})`); g.addColorStop(0.35, `rgba(${glow}, ${a * 0.35})`); g.addColorStop(1, `rgba(${glow}, 0)`);
+    cx.fillStyle = g; cx.beginPath(); cx.arc(x, y, r, 0, 6.2832); cx.fill();
+  }
+  // Mean gap between sparks: the relay's messages per hour over the last day, held to 4 to 16 seconds.
+  function gap() {
+    const m = S && S.messages ? S.messages.slice(-24) : [], perHour = m.reduce((a, b) => a + b, 0) / Math.max(m.length, 1);
+    const mean = perHour > 0 ? Math.min(16, Math.max(4, 3600 / perHour)) : 12;
+    return mean * (0.6 + Math.random() * 0.8) * 1000;
+  }
+  function send(now, back) { sparks.push({ t0: now, dur: 4200 + Math.random() * 900, back }); }
+  function frame(now) {
+    raf = 0;
+    if (!seen || document.hidden || still.matches) return;
+    if (!next) next = now + 1600;
+    if (now >= next) { send(now, Math.random() < 0.35); next = now + gap(); }
+    cx.clearRect(0, 0, W, W);
+    cx.globalCompositeOperation = dawn.matches ? "source-over" : "lighter";
+    const s = now / 1000;
+    for (let i = 0; i < (dawn.matches ? 0 : STARS.length); i++) {
+      const [x, y, b] = STARS[i], tw = 0.5 + 0.5 * Math.sin(s * (0.6 + (i % 5) * 0.17) + i * 1.7);
+      dot(x * W, y * W, W * (0.006 + 0.006 * b), (0.12 + 0.45 * b) * tw * tw);
+    }
+    WINDOWS.forEach(([x, y, r], i) => {
+      const fl = 0.06 + 0.04 * Math.sin(s * 2.3 + i * 2) * Math.sin(s * 1.1 + i), boost = Math.max(0, 1 - (now - arrive[i]) / 1800);
+      dot(x * W, y * W, r * W * (1.6 + boost), fl + 0.35 * boost * boost);
+    });
+    sparks = sparks.filter((p) => {
+      const u = Math.min(1, (now - p.t0) / p.dur), e = u < 0.5 ? 2 * u * u : 1 - (-2 * u + 2) ** 2 / 2;
+      const d = (p.back ? 1 - e : e) * total, fade = Math.min(1, u * 8, (1 - u) * 10);
+      for (let k = 14; k >= 1; k--) {
+        const [x, y] = at(d + (p.back ? 1 : -1) * k * 0.006 * total);
+        dot(x * W, y * W, W * 0.008, 0.16 * (1 - k / 15) * fade);
+      }
+      const [x, y] = at(d);
+      dot(x * W, y * W, W * 0.026, 0.55 * fade);
+      dot(x * W, y * W, W * 0.006, 0.9 * fade);
+      if (u >= 1) { arrive[p.back ? 0 : 1] = now; return false; }
+      return true;
+    });
+    raf = requestAnimationFrame(frame);
+  }
+  const go = () => { if (!raf && seen && !document.hidden && !still.matches) raf = requestAnimationFrame(frame); };
+  size();
+  addEventListener("resize", () => { size(); go(); });
+  document.addEventListener("visibilitychange", go);
+  still.addEventListener("change", () => { if (still.matches) cx.clearRect(0, 0, W, W); go(); });
+  dawn.addEventListener("change", size);
+  if ("IntersectionObserver" in window) new IntersectionObserver(([e]) => { seen = e.isIntersecting; go(); }).observe(art);
+  art.addEventListener("pointerdown", () => { if (!still.matches) { send(performance.now(), false); go(); } });
+
+  // Relay stats chart: hourly series from the relay, drawn as SVG. No libraries.
   const NS = "http://www.w3.org/2000/svg", HOUR = 3600e3;
   const box = $("st-chart"), tip = $("st-tip");
-  let S, hours = 24, metric = "messages", pts = [], svg;
+  let hours = 24, metric = "messages", series = [], svg;
   const fmt = (v) => v.toLocaleString("en-US");
   const el = (tag, attrs, parent) => {
     const e = document.createElementNS(NS, tag);
@@ -304,7 +380,7 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
   const clock = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
   // Points for the period: one per hour (24h, 7d) or one per local day (30d).
-  function series() {
+  function points() {
     const a = S[metric], n = a.length, end = S.start * 1000 + (n - 1) * HOUR, out = [];
     for (let k = hours - 1; k >= 0; k--) out.push({ t: end - k * HOUR, v: n - 1 - k >= 0 ? a[n - 1 - k] : 0, now: k === 0 });
     if (hours < 720) return out;
@@ -317,9 +393,9 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
     return days.slice(-30);
   }
 
-  // Axis: whole-number steps of 1, 2 or 5 x 10^k, about 4 of them.
+  // Axis: whole-number steps of 1, 2 or 5 x 10^k, about 3 of them.
   function axis(v) {
-    const raw = Math.max(v, 4) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+    const raw = Math.max(v, 3) / 3, mag = 10 ** Math.floor(Math.log10(raw));
     const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw);
     return { step, max: Math.ceil(Math.max(v, 1) / step) * step };
   }
@@ -346,38 +422,41 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
   }
 
   function draw() {
-    pts = series();
-    const W = box.clientWidth, H = 250, L = 52, R = 18, T = 10, B = 28;
-    const { step, max } = axis(Math.max(...pts.map((p) => p.v))), dx = (W - L - R) / Math.max(pts.length - 1, 1);
+    series = points();
+    const W = box.clientWidth, H = 220, L = 40, R = 8, T = 12, B = 30;
+    const { step, max } = axis(Math.max(...series.map((p) => p.v))), dx = (W - L - R) / Math.max(series.length - 1, 1);
     const X = (i) => L + i * dx, Y = (v) => T + (H - T - B) * (1 - v / max);
     if (svg) svg.remove();
     svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": `${metric === "messages" ? "Messages relayed" : "Peak machines online"}, last ${hours === 24 ? "24 hours" : hours === 168 ? "7 days" : "30 days"}` });
+    const amber = getComputedStyle(document.documentElement).getPropertyValue("--amber").trim();
     const g = el("linearGradient", { id: "st-fill", x1: 0, y1: 0, x2: 0, y2: 1 }, el("defs", {}, svg));
-    el("stop", { offset: 0, "stop-color": "#2fbf71", "stop-opacity": 0.28 }, g);
-    el("stop", { offset: 1, "stop-color": "#2fbf71", "stop-opacity": 0.02 }, g);
+    el("stop", { offset: 0, "stop-color": amber, "stop-opacity": 0.14 }, g);
+    el("stop", { offset: 1, "stop-color": amber, "stop-opacity": 0 }, g);
     for (let v = 0; v <= max; v += step) {
       const y = Y(v);
       el("line", { class: v ? "c-grid" : "c-base", x1: L, x2: W - R, y1: y, y2: y }, svg);
-      el("text", { class: "tick", x: L - 10, y: y + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
+      el("text", { class: "tick", x: L - 12, y: y + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
     }
-    pts.forEach((p, i) => {
+    series.forEach((p, i) => {
       const d = new Date(p.t);
       let label = "";
       if (hours === 24 && d.getHours() % 4 === 0) label = clock(p.t);
       if (hours === 168 && d.getHours() === 0) label = `${day(p.t, { weekday: "short" })} ${d.getDate()}`;
-      if (hours === 720 && (pts.length - 1 - i) % 5 === 0) label = day(p.t, { month: "short", day: "numeric" });
+      if (hours === 720 && (series.length - 1 - i) % 5 === 0) label = day(p.t, { month: "short", day: "numeric" });
       if (label && X(i) > L + 14 && X(i) < W - R - 14) el("text", { class: "tick", x: X(i), y: H - 8, "text-anchor": "middle" }, svg).textContent = label;
     });
-    const line = curve(pts.map((p, i) => [X(i), Y(p.v)]));
-    el("path", { d: `${line}L${X(pts.length - 1)},${Y(0)}L${L},${Y(0)}Z`, fill: "url(#st-fill)" }, svg);
-    el("path", { class: "c-line", d: line, "stroke-width": pts.length > 100 ? 1.75 : 2.5 }, svg);
+    const line = curve(series.map((p, i) => [X(i), Y(p.v)]));
+    el("path", { d: `${line}L${X(series.length - 1)},${Y(0)}L${L},${Y(0)}Z`, fill: "url(#st-fill)" }, svg);
+    el("path", { class: "c-line", d: line, "stroke-width": series.length > 100 ? 1.25 : 1.5 }, svg);
+    const last = series.length - 1;
+    el("circle", { cx: X(last), cy: Y(series[last].v), r: 2.5, fill: amber }, svg);
     const guide = el("line", { class: "c-guide", y1: T, y2: H - B, visibility: "hidden" }, svg);
-    const dot = el("circle", { class: "c-dot", r: 4.5, visibility: "hidden" }, svg);
+    const dot = el("circle", { class: "c-dot", r: 4, visibility: "hidden" }, svg);
     const hit = el("rect", { x: L, y: 0, width: W - L - R, height: H, fill: "transparent" }, svg);
     const hide = () => { guide.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.hidden = true; };
     hit.addEventListener("pointermove", (e) => {
-      const x = e.clientX - svg.getBoundingClientRect().left, i = Math.max(0, Math.min(pts.length - 1, Math.round((x - L) / dx)));
-      const p = pts[i], px = X(i), py = Y(p.v);
+      const x = e.clientX - svg.getBoundingClientRect().left, i = Math.max(0, Math.min(series.length - 1, Math.round((x - L) / dx)));
+      const p = series[i], px = X(i), py = Y(p.v);
       for (const [a, v] of [["x1", px], ["x2", px]]) guide.setAttribute(a, v);
       dot.setAttribute("cx", px); dot.setAttribute("cy", py);
       guide.setAttribute("visibility", "visible"); dot.setAttribute("visibility", "visible");
@@ -389,9 +468,8 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
       tip.append(Object.assign(document.createElement("b"), { textContent: fmt(p.v) }), " " + what);
       tip.hidden = false;
       const tw = tip.offsetWidth, th = tip.offsetHeight;
-      const left = Math.max(0, Math.min(W - tw, px - tw / 2)), above = 14 + py - th - 12;
-      const top = above >= 0 ? above : 14 + py + 14;
-      tip.style.transform = `translate(${left}px, ${top}px)`;
+      const left = Math.max(0, Math.min(W - tw, px - tw / 2)), above = py - th - 12;
+      tip.style.transform = `translate(${left}px, ${above >= 0 ? above : py + 14}px)`;
     });
     hit.addEventListener("pointerleave", hide);
     box.insertBefore(svg, tip);
@@ -399,7 +477,7 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
 
   function kpis() {
     const n = S.messages.length, from = Math.max(0, n - hours);
-    $("st-online").textContent = fmt(S.machines_online);
+    $("st-online").textContent = $("hero-online").textContent = fmt(S.machines_online);
     $("st-msgs").textContent = fmt(S.messages.slice(from).reduce((a, b) => a + b, 0));
     $("st-peak").textContent = fmt(Math.max(0, ...S.peak_online.slice(from)));
     $("st-total").textContent = fmt(S.messages_total);
@@ -413,7 +491,8 @@ curl -fsSL https://letagents.talk/install.sh | sh -s -- join macbook la1.…</co
   }
 
   box.hidden = false;
-  try { if (!load(JSON.parse($("st-data").textContent))) throw 0; } catch { box.hidden = true; return; }
+  try { if (!load(JSON.parse($("st-data").textContent))) throw 0; } catch { box.hidden = true; go(); return; }
+  go();
   $("st-period").hidden = false;
   for (const b of document.querySelectorAll("#st-period button")) b.addEventListener("click", () => {
     hours = +b.dataset.h;

@@ -23,9 +23,12 @@ const LLMS_FULL: &str = concat!(include_str!("../../web/llms.txt"), "\n\n---\n\n
 const ROBOTS: &str = include_str!("../../web/robots.txt");
 const SITEMAP: &str = include_str!("../../web/sitemap.xml");
 const SECURITY_TXT: &str = include_str!("../../web/security.txt");
-/// Social previews, rendered by web/src/social.py: Open Graph (1200x630) and X (1200x600), at 2x.
+/// Social previews, rendered by web/src/social.py: Open Graph (1200x630) and X (1200x600).
 const OG_PNG: &[u8] = include_bytes!("../../web/og.png");
 const X_PNG: &[u8] = include_bytes!("../../web/x.png");
+/// The home page painting: night (dark mode) and dawn (light mode). WebP with alpha, 1024x1024.
+const ART_NIGHT: &[u8] = include_bytes!("../../web/art-night.webp");
+const ART_DAWN: &[u8] = include_bytes!("../../web/art-dawn.webp");
 
 /// Agents fetching "/" with curl, fetch or an explicit text/markdown Accept get the setup guide as markdown.
 fn wants_markdown(req: &Request) -> bool {
@@ -75,7 +78,7 @@ fn page_with_script(body: &str, content_type: &str, script: &str) -> Result<Resp
     let script = if script.is_empty() { String::new() } else { format!(" script-src {script}; connect-src 'self';") };
     h.set(
         "content-security-policy",
-        &format!("default-src 'none'; style-src 'unsafe-inline';{script} img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+        &format!("default-src 'none'; style-src 'unsafe-inline';{script} img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
     )?;
     h.set("referrer-policy", "no-referrer")?;
     h.set("x-content-type-options", "nosniff")?;
@@ -84,10 +87,10 @@ fn page_with_script(body: &str, content_type: &str, script: &str) -> Result<Resp
     Ok(r)
 }
 
-fn image(body: &[u8]) -> Result<Response> {
+fn image(body: &[u8], content_type: &str) -> Result<Response> {
     let mut r = Response::from_bytes(body.to_vec())?;
     let h = r.headers_mut();
-    h.set("content-type", "image/png")?;
+    h.set("content-type", content_type)?;
     h.set("x-content-type-options", "nosniff")?;
     h.set("cache-control", "public, max-age=86400")?;
     Ok(r)
@@ -173,8 +176,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             r.headers_mut().set("access-control-allow-origin", "*")?;
             return Ok(r);
         }
-        (Method::Get, "/og.png") => return image(OG_PNG),
-        (Method::Get, "/x.png") => return image(X_PNG),
+        (Method::Get, "/og.png") => return image(OG_PNG, "image/png"),
+        (Method::Get, "/x.png") => return image(X_PNG, "image/png"),
+        (Method::Get, "/art-night.webp") => return image(ART_NIGHT, "image/webp"),
+        (Method::Get, "/art-dawn.webp") => return image(ART_DAWN, "image/webp"),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
         _ => {}
     }
