@@ -6,11 +6,12 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0f0e0c" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ece6dc" media="(prefers-color-scheme: light)">
-<meta name="description" content="Let your AI agents on different machines talk to each other: end-to-end encrypted, no VPN, no open port. One line per machine. Works with pi, Claude Code, Codex, Cursor and any shell agent.">
+<meta name="description" content="Let AI agents on different machines talk to each other. End-to-end encrypted. No VPN, no open port. Works with pi, Claude Code, Codex and Cursor.">
 <link rel="canonical" href="https://letagents.talk/">
 <link rel="alternate" type="text/markdown" href="/agents.md" title="Agent setup guide">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
 <meta property="og:site_name" content="letagents">
 <meta property="og:url" content="https://letagents.talk/">
 <meta property="og:title" content="letagents: AI agents on different machines, talking">
@@ -27,13 +28,18 @@
 <meta name="twitter:image:alt" content="letagents: a night painting of two far lit windows joined by a path of small lights, beside the line that installs it">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"letagents","url":"https://letagents.talk/",
- "description":"End-to-end encrypted messaging between AI agents on different machines. The relay stores sealed bytes only.",
- "applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT",
- "codeRepository":"https://github.com/pratikgajjar/letagents","downloadUrl":"https://letagents.talk/install.sh",
- "softwareHelp":"https://letagents.talk/agents.md","programmingLanguage":"Rust","isAccessibleForFree":true,
+ "description":"End-to-end encrypted messages between AI agents on different machines. No VPN, no open port. The relay stores sealed bytes only.",
+ "applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","softwareVersion":"0.6",
+ "license":"https://opensource.org/licenses/MIT","codeRepository":"https://github.com/pratikgajjar/letagents",
+ "sameAs":"https://github.com/pratikgajjar/letagents","downloadUrl":"https://letagents.talk/install.sh",
+ "installUrl":"https://letagents.talk/install.sh","softwareHelp":{"@type":"CreativeWork","url":"https://letagents.talk/agents.md"},
+ "programmingLanguage":"Rust","isAccessibleForFree":true,"image":"https://letagents.talk/icon-512.png","screenshot":"https://letagents.talk/og.png",
  "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
-<link rel="icon" href="data:,">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
 <title>letagents: end-to-end encrypted messages between AI agents</title>
 <style>
   /* Direction: "Two Lamps". A night painting on a warm-black canvas, one calm sentence beside it, much
@@ -47,11 +53,13 @@
     --s1: 4px; --s2: 8px; --s3: 16px; --s4: 24px; --s5: 40px; --s6: 64px; --s7: 112px;
     --gut: clamp(20px, 5vw, 72px); --max: 1180px; --r: 3px;
     --grain-o: .05;
+    --rest: brightness(.64) saturate(.85); /* the painting at rest, before the lantern comes near */
   }
   @media (prefers-color-scheme: light) {
     :root { --bg: #ece6dc; --ink: #24201b; --soft: #4b443b; --mute: #6b6357; --line: #d5ccbe; --lift: #e5dfd3;
-      --amber: #c4803a; --amber-ink: #8f4f17; --glow: 196, 120, 50; --grain-o: .07; }
+      --amber: #c4803a; --amber-ink: #8f4f17; --glow: 196, 120, 50; --grain-o: .07; --rest: brightness(.86) saturate(.72) contrast(.95); }
   }
+  ::selection { background: rgba(var(--glow), .32); color: var(--ink); }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
   body { position: relative; min-height: 100vh; margin: 0; background: var(--bg); color: var(--soft); font: 400 16px/1.6 var(--sans); font-variant-numeric: tabular-nums;
@@ -62,7 +70,8 @@
   a { color: var(--ink); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--ink) 35%, transparent);
     text-decoration-thickness: 1px; text-underline-offset: 4px; transition: text-decoration-color .2s; }
   a:hover { text-decoration-color: var(--amber); }
-  :focus-visible { outline: 1.5px solid var(--amber); outline-offset: 4px; border-radius: var(--r); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; border-radius: var(--r); }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .shell { width: 100%; max-width: calc(var(--max) + 2 * var(--gut)); margin: 0 auto; padding: 0 var(--gut); }
   .skipnav { position: absolute; left: var(--gut); top: -60px; background: var(--ink); color: var(--bg); padding: 6px 12px; z-index: 20; }
   .skipnav:focus { top: 12px; }
@@ -80,13 +89,22 @@
     min-height: calc(100svh - 84px - 72px); padding: var(--s5) 0 var(--s6); }
   h1 { font: 400 clamp(27px, 2.45vw, 35px)/1.26 var(--serif); color: var(--ink); margin: 0; letter-spacing: -.01em; max-width: 30rem; text-wrap: pretty; }
   .lede { margin: var(--s4) 0 0; max-width: 27rem; color: var(--soft); text-wrap: pretty; }
-  .cmd { margin: var(--s5) 0 0; display: flex; align-items: flex-start; gap: var(--s3); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 0; }
+  .cmd { position: relative; margin: var(--s5) 0 0; display: flex; align-items: flex-start; gap: var(--s3); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 0; }
+  /* Copied: a warm line runs along the bottom rule, then fades. */
+  .cmd::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--amber); transform: scaleX(0); transform-origin: left;
+    opacity: 0; transition: transform .6s cubic-bezier(.2, .7, .2, 1), opacity .9s ease .9s; }
+  .cmd.done::after { transform: scaleX(1); opacity: 1; transition: transform .6s cubic-bezier(.2, .7, .2, 1), opacity .2s; }
   .cmd code { flex: 1; min-width: 0; font: 400 13px/1.6 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
   @media (min-width: 1200px) { .cmd code { white-space: nowrap; overflow-wrap: normal; } }
   .cmd code::before { content: "$ "; color: var(--mute); }
-  .copy { flex: none; font: 500 12.5px/1 var(--sans); letter-spacing: .04em; color: var(--mute); background: none; border: 0; padding: 6px 2px; margin-top: 1px; cursor: pointer; }
+  .copy { flex: none; display: grid; justify-items: end; font: 500 12.5px/1 var(--sans); letter-spacing: .04em; color: var(--mute); background: none; border: 0; padding: 6px 2px; margin-top: 1px; cursor: pointer; }
   .copy:hover { color: var(--ink); }
-  .copy[data-done] { color: var(--amber-ink); }
+  .copy > span { grid-area: 1 / 1; display: inline-flex; align-items: center; gap: 5px; transition: opacity .25s ease, transform .35s cubic-bezier(.2, .7, .2, 1); }
+  .copy .ok { color: var(--amber-ink); opacity: 0; transform: translateY(5px); }
+  .copy .ok path { stroke-dasharray: 12; stroke-dashoffset: 12; transition: stroke-dashoffset .4s ease .1s; }
+  .copy.done .go { opacity: 0; transform: translateY(-5px); }
+  .copy.done .ok { opacity: 1; transform: none; }
+  .copy.done .ok path { stroke-dashoffset: 0; }
   .hint { margin: var(--s3) 0 0; font-size: 14px; color: var(--mute); max-width: 27rem; }
   .hint a { color: var(--soft); }
   .pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-right: 9px; vertical-align: 2px;
@@ -97,9 +115,12 @@
 
   .art { position: relative; margin: 0; justify-self: end; width: min(100%, 580px); aspect-ratio: 1; }
   .art img, .art canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .art img { animation: la-fade 1.8s ease both; }
+  .art img { animation: la-fade 1.8s ease both; transition: filter 1.4s ease; }
   @keyframes la-fade { from { opacity: 0; } }
   .art canvas { pointer-events: none; }
+  /* With the lantern on (script, motion allowed), the painting rests darker; the canvas lights it near the pointer. */
+  .art.dim img { filter: var(--rest); }
+  .art.dim { -webkit-tap-highlight-color: transparent; }
 
   /* Below the fold */
   main > section { padding: var(--s7) 0 0; }
@@ -179,7 +200,7 @@
   @media (prefers-reduced-motion: reduce) {
     .pulse { animation: none; }
     .art img { animation: none; }
-    a, .kpi b, .reads a i { transition: none; }
+    a, .kpi b, .reads a i, .copy > span, .copy .ok path, .cmd::after, .art img { transition: none !important; }
   }
 </style>
 </head>
@@ -195,7 +216,8 @@
     <div>
       <h1 id="hero-title">Let your AI agents on different machines talk to each other: end‑to‑end encrypted, no VPN, no open port.</h1>
       <p class="lede">Run this on one machine. It prints the line for the other.</p>
-      <div class="cmd"><code id="cmd">curl -fsSL https://letagents.talk/install.sh | sh -s -- invite</code><button type="button" class="copy" id="copy" hidden>Copy</button></div>
+      <div class="cmd"><code id="cmd">curl -fsSL https://letagents.talk/install.sh | sh -s -- invite</code><button type="button" class="copy" id="copy" aria-label="Copy the install command" hidden><span class="go" aria-hidden="true">Copy</span><span class="ok" aria-hidden="true"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4.6 4 7.5 10 1.5"/></svg>Copied</span></button></div>
+      <p class="vh" id="copy-said" role="status"></p>
       <p class="hint">Or tell your agent: read <a href="/agents.md">letagents.talk/agents.md</a> and connect me to my other machine.</p>
       <p class="alive"><span class="pulse" aria-hidden="true"></span><b id="hero-online">__ONLINE__</b> machines online now · <a href="#stats">relay stats</a></p>
     </div>
@@ -273,18 +295,25 @@
   // Copy the install line.
   const copy = $("copy");
   if (navigator.clipboard) {
+    let undo = 0;
     copy.hidden = false;
     copy.addEventListener("click", () => navigator.clipboard.writeText($("cmd").textContent).then(() => {
-      copy.textContent = "Copied"; copy.dataset.done = "";
-      setTimeout(() => { copy.textContent = "Copy"; delete copy.dataset.done; }, 1800);
+      clearTimeout(undo);
+      copy.classList.add("done"); copy.parentElement.classList.add("done"); $("copy-said").textContent = "Copied the install command.";
+      undo = setTimeout(() => { copy.classList.remove("done"); copy.parentElement.classList.remove("done"); $("copy-said").textContent = ""; }, 2000);
     }, () => {}));
   }
 
   // Light layer over the painting: stars twinkle, the windows flicker, and a spark carries a letter along
   // the firefly path. Sparks come about as often as the relay carries messages (from /stats.json), within
-  // calm limits. Nothing moves with prefers-reduced-motion.
-  const PATH = [[0.2734,0.8008],[0.3174,0.7832],[0.3711,0.7637],[0.4004,0.7617],[0.459,0.752],[0.4639,0.7275],[0.4932,0.708],[0.5342,0.6953],[0.5762,0.6875],[0.6055,0.6787],[0.6445,0.6709],[0.6934,0.6445],[0.7197,0.6348],[0.7393,0.625],[0.7539,0.6123],[0.7715,0.5957],[0.7617,0.583],[0.7393,0.5713],[0.7178,0.5615],[0.6807,0.5469],[0.6641,0.5342],[0.668,0.5215],[0.7051,0.5029],[0.7422,0.4902],[0.7764,0.4805],[0.8027,0.4688],[0.8066,0.4551],[0.8125,0.4414],[0.8447,0.4248],[0.8643,0.4131],[0.8838,0.3975],[0.8984,0.3838],[0.9102,0.374]], STARS = [[0.3301,0.1104,1],[0.6533,0.1523,0.7],[0.8652,0.1328,0.7],[0.1113,0.2422,0.6],[0.1895,0.2324,0.5],[0.5977,0.1992,0.45],[0.1953,0.1377,0.45],[0.4277,0.2422,0.4],[0.5645,0.1738,0.4],[0.5156,0.1211,0.35],[0.3545,0.2656,0.35],[0.6123,0.0859,0.3],[0.4229,0.3594,0.25],[0.3008,0.3145,0.25]], WINDOWS = [[0.1641,0.7617,0.0332],[0.9102,0.374,0.0117]];
-  const art = $("art"), cv = $("sky"), cx = cv.getContext("2d");
+  // calm limits. The pointer is a lantern: the painting rests darker, and a warm light follows the pointer
+  // (or a touch drag), shows the painting at full strength and wakes the path lights and windows near it.
+  // With prefers-reduced-motion nothing moves: the painting is drawn once, gently lit.
+  const PATH = [[0.2734,0.8008],[0.3174,0.7832],[0.3711,0.7637],[0.4004,0.7617],[0.459,0.752],[0.4639,0.7275],[0.4932,0.708],[0.5342,0.6953],[0.5762,0.6875],[0.6055,0.6787],[0.6445,0.6709],[0.6934,0.6445],[0.7197,0.6348],[0.7393,0.625],[0.7539,0.6123],[0.7715,0.5957],[0.7617,0.583],[0.7393,0.5713],[0.7178,0.5615],[0.6807,0.5469],[0.6641,0.5342],[0.668,0.5215],[0.7051,0.5029],[0.7422,0.4902],[0.7764,0.4805],[0.8027,0.4688],[0.8066,0.4551],[0.8125,0.4414],[0.8447,0.4248],[0.8643,0.4131],[0.8838,0.3975],[0.8984,0.3838],[0.9102,0.374]], STARS = [[0.3301,0.1104,1],[0.6533,0.1523,0.7],[0.8652,0.1328,0.7],[0.1113,0.2422,0.6],[0.1895,0.2324,0.5],[0.5977,0.1992,0.45],[0.1953,0.1377,0.45],[0.4277,0.2422,0.4],[0.5645,0.1738,0.4],[0.5156,0.1211,0.35],[0.3545,0.2656,0.35],[0.6123,0.0859,0.3],[0.4229,0.3594,0.25],[0.3008,0.3145,0.25]], LIGHTS = [[0.293,0.7871,0.58],[0.3203,0.7822,1],[0.3418,0.7734,0.92],[0.3623,0.7754,0.83],[0.3721,0.7646,0.72],[0.3994,0.7627,1],[0.4316,0.7607,0.78],[0.459,0.7256,0.77],[0.4609,0.752,0.94],[0.4707,0.7393,0.56],[0.4922,0.709,1],[0.5342,0.6943,0.91],[0.5752,0.6865,0.71],[0.6113,0.6787,0.93],[0.6426,0.6719,0.79],[0.6602,0.5332,0.58],[0.6631,0.5254,0.82],[0.6777,0.6611,0.76],[0.6807,0.5469,0.68],[0.6846,0.5146,0.94],[0.6943,0.6445,1],[0.7002,0.5049,0.7],[0.7002,0.5557,0.92],[0.707,0.5039,0.47],[0.7197,0.6357,0.57],[0.7393,0.5703,0.84],[0.7393,0.626,1],[0.7402,0.4912,0.89],[0.7539,0.4873,0.66],[0.7539,0.6162,0.62],[0.7617,0.583,0.8],[0.7686,0.6064,0.73],[0.7773,0.4824,1],[0.7979,0.4492,1],[0.8027,0.4727,0.57],[0.8125,0.4385,0.43],[0.8281,0.4316,0.96],[0.8516,0.4189,0.65],[0.874,0.4014,0.69],[0.8848,0.3936,0.43],[0.2266,0.8232,1.6]], WINDOWS = [[0.1641,0.7617,0.0332],[0.9102,0.374,0.0117]];
+  const art = $("art"), cv = $("sky"), cx = cv.getContext("2d"), img = art.querySelector("img");
+  // The lantern: position as fractions of the painting, strength a (0..1); tx, ty, ta are the targets.
+  const lamp = { x: 0, y: 0, tx: 0, ty: 0, a: 0, ta: 0 }, LR = 0.22;
+  const off = document.createElement("canvas"), ox = off.getContext("2d");
   // Path sampled as a Catmull-Rom curve, with the length along it.
   const pts = [], len = [0];
   for (let i = 0; i < PATH.length - 1; i++) {
@@ -306,13 +335,17 @@
     return [pts[lo][0] + (pts[hi][0] - pts[lo][0]) * t, pts[lo][1] + (pts[hi][1] - pts[lo][1]) * t];
   };
   let glow = "";
-  let W = 0, raf = 0, seen = true, sparks = [], next = 0, arrive = [0, 0];
+  let W = 0, dpr = 1, raf = 0, seen = true, sparks = [], next = 0, arrive = [0, 0], last = 0;
 
   function size() {
     glow = getComputedStyle(document.documentElement).getPropertyValue("--glow").trim() || "255, 196, 120";
-    const r = art.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+    const r = art.getBoundingClientRect();
+    dpr = Math.min(devicePixelRatio || 1, 2);
     W = r.width; cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
     cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    off.width = off.height = Math.ceil(2 * 1.06 * LR * W * dpr);
+    art.classList.toggle("dim", !still.matches);
+    if (still.matches) rest();
   }
   function dot(x, y, r, a) {
     const g = cx.createRadialGradient(x, y, 0, x, y, r);
@@ -326,21 +359,75 @@
     return mean * (0.6 + Math.random() * 0.8) * 1000;
   }
   function send(now, back) { sparks.push({ t0: now, dur: 4200 + Math.random() * 900, back }); }
-  function frame(now) {
-    raf = 0;
-    if (!seen || document.hidden || still.matches) return;
-    if (!next) next = now + 1600;
-    if (now >= next) { send(now, Math.random() < 0.35); next = now + gap(); }
+  // Reduced motion: one still frame, the windows and path lights gently lit.
+  function rest() {
     cx.clearRect(0, 0, W, W);
     cx.globalCompositeOperation = dawn.matches ? "source-over" : "lighter";
+    for (const [x, y, r] of WINDOWS) dot(x * W, y * W, r * W * 1.9, 0.12);
+    for (const [x, y, b] of LIGHTS) dot(x * W, y * W, W * 0.012, 0.16 * Math.min(b, 1));
+  }
+  // The lantern's light, drawn on a small offscreen canvas: the painting, warmed (multiply keeps its detail),
+  // cut back to the painted pixels (the light stays on the paper), then to a soft round mask. On the page the copy
+  // shows the painting at full strength; a second copy, added at night and soft-light at dawn, makes the heart of the light richer.
+  function lantern(s) {
+    const a = lamp.a, x = lamp.x * W, y = lamp.y * W, h = off.width / dpr / 2;
+    const R = LR * W * (1 + 0.03 * Math.sin(s * 7.3) * Math.sin(s * 2.9 + 1)), night = !dawn.matches;
+    if (img.complete && img.naturalWidth) {
+      ox.setTransform(1, 0, 0, 1, 0, 0);
+      ox.globalCompositeOperation = "source-over";
+      ox.clearRect(0, 0, off.width, off.height);
+      ox.setTransform(dpr, 0, 0, dpr, (h - x) * dpr, (h - y) * dpr);
+      ox.drawImage(img, 0, 0, W, W);
+      ox.globalCompositeOperation = "multiply";
+      ox.fillStyle = night ? "rgb(255, 200, 140)" : "rgb(255, 222, 186)";
+      ox.fillRect(x - h, y - h, 2 * h, 2 * h);
+      ox.globalCompositeOperation = "lighter";
+      ox.fillStyle = night ? "rgba(120, 72, 30, .2)" : "rgba(90, 50, 10, .1)";
+      ox.fillRect(x - h, y - h, 2 * h, 2 * h);
+      ox.globalCompositeOperation = "destination-in";
+      ox.drawImage(img, 0, 0, W, W);
+      const m = ox.createRadialGradient(x, y, 0, x, y, R);
+      m.addColorStop(0, `rgba(0,0,0,${a})`); m.addColorStop(0.3, `rgba(0,0,0,${a * 0.78})`); m.addColorStop(0.65, `rgba(0,0,0,${a * 0.28})`); m.addColorStop(1, "rgba(0,0,0,0)");
+      ox.fillStyle = m; ox.fillRect(x - h, y - h, 2 * h, 2 * h);
+      cx.globalCompositeOperation = "source-over";
+      cx.drawImage(off, x - h, y - h, 2 * h, 2 * h);
+      cx.globalCompositeOperation = night ? "lighter" : "soft-light";
+      cx.drawImage(off, x - h, y - h, 2 * h, 2 * h);
+    }
+    // Path lights and the hand lantern near the light glow, each with its own small flicker.
+    cx.globalCompositeOperation = night ? "lighter" : "source-over";
+    for (let i = 0; i < LIGHTS.length; i++) {
+      const [lx, ly, b] = LIGHTS[i], d = Math.hypot(lx * W - x, ly * W - y) / (R * 1.35);
+      if (d >= 1) continue;
+      const g = (1 - d) * (1 - d) * a * (0.82 + 0.18 * Math.sin(s * 5.1 + i * 2.4));
+      dot(lx * W, ly * W, W * 0.017 * Math.max(1, b), 0.5 * g * Math.min(b, 1.2));
+      dot(lx * W, ly * W, W * 0.0045, 0.85 * g);
+    }
+  }
+  function frame(now) {
+    raf = 0;
+    if (!seen || document.hidden || still.matches) { last = 0; return; }
+    if (!next) next = now + 1600;
+    if (now >= next) { send(now, Math.random() < 0.35); next = now + gap(); }
+    const dt = last ? Math.min(50, now - last) : 16;
+    last = now;
+    // Ease the lantern: it trails the pointer a little, comes up in about 0.4 s and fades out over about 1.2 s.
+    const k = 1 - Math.exp(-dt / 70);
+    lamp.x += (lamp.tx - lamp.x) * k; lamp.y += (lamp.ty - lamp.y) * k;
+    lamp.a += (lamp.ta - lamp.a) * (1 - Math.exp(-dt / (lamp.ta > lamp.a ? 140 : 420)));
+    if (lamp.a < 0.004 && !lamp.ta) lamp.a = 0;
+    cx.clearRect(0, 0, W, W);
     const s = now / 1000;
+    if (lamp.a) lantern(s);
+    cx.globalCompositeOperation = dawn.matches ? "source-over" : "lighter";
     for (let i = 0; i < (dawn.matches ? 0 : STARS.length); i++) {
       const [x, y, b] = STARS[i], tw = 0.5 + 0.5 * Math.sin(s * (0.6 + (i % 5) * 0.17) + i * 1.7);
       dot(x * W, y * W, W * (0.006 + 0.006 * b), (0.12 + 0.45 * b) * tw * tw);
     }
     WINDOWS.forEach(([x, y, r], i) => {
       const fl = 0.06 + 0.04 * Math.sin(s * 2.3 + i * 2) * Math.sin(s * 1.1 + i), boost = Math.max(0, 1 - (now - arrive[i]) / 1800);
-      dot(x * W, y * W, r * W * (1.6 + boost), fl + 0.35 * boost * boost);
+      const near = lamp.a * Math.max(0, 1 - Math.hypot(x - lamp.x, y - lamp.y) / (LR * 1.7)) ** 2;
+      dot(x * W, y * W, r * W * (1.6 + boost + near), fl + 0.35 * boost * boost + 0.3 * near);
     });
     sparks = sparks.filter((p) => {
       const u = Math.min(1, (now - p.t0) / p.dur), e = u < 0.5 ? 2 * u * u : 1 - (-2 * u + 2) ** 2 / 2;
@@ -361,9 +448,22 @@
   size();
   addEventListener("resize", () => { size(); go(); });
   document.addEventListener("visibilitychange", go);
-  still.addEventListener("change", () => { if (still.matches) cx.clearRect(0, 0, W, W); go(); });
+  still.addEventListener("change", () => { lamp.a = lamp.ta = 0; size(); go(); });
   dawn.addEventListener("change", size);
   if ("IntersectionObserver" in window) new IntersectionObserver(([e]) => { seen = e.isIntersecting; go(); }).observe(art);
+  // Mouse and pen move the lantern; touch uses touch events, which keep coming while the page scrolls.
+  const aim = (px, py) => {
+    if (still.matches) return;
+    const r = art.getBoundingClientRect(), fx = (px - r.left) / r.width, fy = (py - r.top) / r.height;
+    if (lamp.a < 0.03) { lamp.x = fx; lamp.y = fy; }
+    lamp.tx = fx; lamp.ty = fy; lamp.ta = 1; go();
+  };
+  const out = () => { lamp.ta = 0; };
+  art.addEventListener("pointermove", (e) => { if (e.pointerType !== "touch") aim(e.clientX, e.clientY); });
+  art.addEventListener("pointerleave", (e) => { if (e.pointerType !== "touch") out(); });
+  for (const t of ["touchstart", "touchmove"]) art.addEventListener(t, (e) => aim(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+  for (const t of ["touchend", "touchcancel"]) art.addEventListener(t, out, { passive: true });
+  addEventListener("blur", out);
   art.addEventListener("pointerdown", () => { if (!still.matches) { send(performance.now(), false); go(); } });
 
   // Relay stats chart: hourly series from the relay, drawn as SVG. No libraries.

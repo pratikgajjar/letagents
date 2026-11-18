@@ -29,6 +29,16 @@ const X_PNG: &[u8] = include_bytes!("../../web/x.png");
 /// The home page painting: night (dark mode) and dawn (light mode). WebP with alpha, 1024x1024.
 const ART_NIGHT: &[u8] = include_bytes!("../../web/art-night.webp");
 const ART_DAWN: &[u8] = include_bytes!("../../web/art-dawn.webp");
+/// Icons from the logo motif (two lamps and a dotted path), rendered by web/src/icons.py, and the web app manifest.
+const FAVICON_SVG: &[u8] = include_bytes!("../../web/favicon.svg");
+const FAVICON_ICO: &[u8] = include_bytes!("../../web/favicon.ico");
+const APPLE_TOUCH_ICON: &[u8] = include_bytes!("../../web/apple-touch-icon.png");
+const ICON_192: &[u8] = include_bytes!("../../web/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../../web/icon-512.png");
+const ICON_MASKABLE: &[u8] = include_bytes!("../../web/icon-maskable-512.png");
+const MANIFEST: &str = include_str!("../../web/site.webmanifest");
+/// The not-found page for browsers. Other clients (curl, agents) get the short JSON error.
+const NOT_FOUND_HTML: &str = include_str!("../../web/404.html");
 
 /// Agents fetching "/" with curl, fetch or an explicit text/markdown Accept get the setup guide as markdown.
 fn wants_markdown(req: &Request) -> bool {
@@ -78,7 +88,7 @@ fn page_with_script(body: &str, content_type: &str, script: &str) -> Result<Resp
     let script = if script.is_empty() { String::new() } else { format!(" script-src {script}; connect-src 'self';") };
     h.set(
         "content-security-policy",
-        &format!("default-src 'none'; style-src 'unsafe-inline';{script} img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+        &format!("default-src 'none'; style-src 'unsafe-inline';{script} img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
     )?;
     h.set("referrer-policy", "no-referrer")?;
     h.set("x-content-type-options", "nosniff")?;
@@ -92,8 +102,15 @@ fn image(body: &[u8], content_type: &str) -> Result<Response> {
     let h = r.headers_mut();
     h.set("content-type", content_type)?;
     h.set("x-content-type-options", "nosniff")?;
+    // An SVG opened on its own is a document: it may style itself, and nothing else.
+    h.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")?;
     h.set("cache-control", "public, max-age=86400")?;
     Ok(r)
+}
+
+/// A browser asking for a page (Accept: text/html).
+fn wants_html(req: &Request) -> bool {
+    req.headers().get("accept").ok().flatten().unwrap_or_default().to_ascii_lowercase().contains("text/html")
 }
 
 fn is_b64_len(s: &str, len: usize) -> bool {
@@ -149,6 +166,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     // HEAD on a static route is answered like GET (link checkers and preview crawlers use it); the
     // runtime drops the body.
     let method = if req.method() == Method::Head { Method::Get } else { req.method() };
+    let get = method == Method::Get;
     match (method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             let mut r = if wants_markdown(&req) {
@@ -180,6 +198,13 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/x.png") => return image(X_PNG, "image/png"),
         (Method::Get, "/art-night.webp") => return image(ART_NIGHT, "image/webp"),
         (Method::Get, "/art-dawn.webp") => return image(ART_DAWN, "image/webp"),
+        (Method::Get, "/favicon.svg") => return image(FAVICON_SVG, "image/svg+xml"),
+        (Method::Get, "/favicon.ico") => return image(FAVICON_ICO, "image/x-icon"),
+        (Method::Get, "/apple-touch-icon.png") | (Method::Get, "/apple-touch-icon-precomposed.png") => return image(APPLE_TOUCH_ICON, "image/png"),
+        (Method::Get, "/icon-192.png") => return image(ICON_192, "image/png"),
+        (Method::Get, "/icon-512.png") => return image(ICON_512, "image/png"),
+        (Method::Get, "/icon-maskable-512.png") => return image(ICON_MASKABLE, "image/png"),
+        (Method::Get, "/site.webmanifest") | (Method::Get, "/manifest.webmanifest") => return page(MANIFEST, "application/manifest+json; charset=utf-8"),
         (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
         _ => {}
     }
@@ -243,6 +268,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         }
         let stub = env.durable_object("MAILBOX")?.id_from_name(id)?.get_stub()?;
         return stub.fetch_with_request(req).await;
+    }
+    if get && !path.starts_with("/v1/") && wants_html(&req) {
+        let mut r = page(NOT_FOUND_HTML, "text/html; charset=utf-8")?.with_status(404);
+        r.headers_mut().set("cache-control", "no-store")?;
+        r.headers_mut().set("vary", "Accept")?;
+        return Ok(r);
     }
     json(404, serde_json::json!({ "error": "not found" }))
 }

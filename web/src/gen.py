@@ -2,6 +2,7 @@
 #   mark   the small logo: two lamps and a dotted arc between them (inline SVG)
 #   path   the firefly path in the painting (web/art-night.webp), for the spark on the canvas layer
 #   stars  the painted stars that twinkle on the canvas layer
+#   lights the painted path lights and the lantern in the figure's hand, which glow when the pointer's lantern is near
 # Coordinates of path and stars are in painting pixels (1024 x 1024), traced from the painting, and are
 # written as fractions of the side so the canvas can scale them.
 import json
@@ -20,6 +21,16 @@ STARS = [
     (338, 113, 1), (669, 156, .7), (886, 136, .7), (114, 248, .6), (194, 238, .5), (612, 204, .45), (200, 141, .45),
     (438, 248, .4), (578, 178, .4), (528, 124, .35), (363, 272, .35), (627, 88, .3), (433, 368, .25), (308, 322, .25),
 ]
+# The painted path lights (x, y, strength; 1 is the brightest path light), found as small warm local maxima near PATH,
+# and the stronger lantern in the left figure's hand.
+LIGHTS = [
+    (300, 806, .58), (328, 801, 1), (350, 792, .92), (371, 794, .83), (381, 783, .72), (409, 781, 1), (442, 779, .78),
+    (470, 743, .77), (472, 770, .94), (482, 757, .56), (504, 726, 1), (547, 711, .91), (589, 703, .71), (626, 695, .93),
+    (658, 688, .79), (676, 546, .58), (679, 538, .82), (694, 677, .76), (697, 560, .68), (701, 527, .94), (711, 660, 1),
+    (717, 517, .7), (717, 569, .92), (724, 516, .47), (737, 651, .57), (757, 584, .84), (757, 641, 1), (758, 503, .89),
+    (772, 499, .66), (772, 631, .62), (780, 597, .8), (787, 621, .73), (796, 494, 1), (817, 460, 1), (822, 484, .57),
+    (832, 449, .43), (848, 442, .96), (872, 429, .65), (895, 411, .69), (906, 403, .43), (232, 843, 1.6),
+]
 # The two lit windows: the sender's (near, left) and the receiver's (far, right).
 WINDOWS = [(168, 780, 34), (932, 383, 12)]
 
@@ -30,6 +41,7 @@ def frac(v):
 
 path = json.dumps([[frac(x), frac(y)] for x, y in PATH], separators=(",", ":"))
 stars = json.dumps([[frac(x), frac(y), b] for x, y, b in STARS], separators=(",", ":"))
+lights = json.dumps([[frac(x), frac(y), b] for x, y, b in LIGHTS], separators=(",", ":"))
 windows = json.dumps([[frac(x), frac(y), frac(r)] for x, y, r in WINDOWS], separators=(",", ":"))
 
 # Mark: two lamps on a 22 x 22 grid, joined by dots along a quadratic arc that sags between them.
