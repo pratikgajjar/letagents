@@ -440,8 +440,10 @@ out=$(node "$AT" post "$A" "$T/g.env" drop="$SHARED" ip=10.1.7.6)
 check "G3 removed carol's send with the old shared code: refused at the relay ($out)" grep -q '^404 ' <<<"$out"
 out=$(la carol send alicemach/planner "$X-4" --as worker 2>&1)
 check "G3 carol's own client: the relay refuses it ($out)" grep -q "404" <<<"$out"
-out=$(la bob send alicemach/planner "$(mark after)" --as worker 2>&1)
-check "G3 control: bob still reaches alice ($out)" grep -q "pushed" <<<"$out"
+# (The planner session is the proof; the receipt may take over 5 s on a slow runner and then says "sent".)
+X=$(mark after)
+out=$(la bob send alicemach/planner "$X" --as worker 2>&1)
+check "G3 control: bob still reaches alice's planner ($out)" wait_for 15 grep -q "$X" "$T/pi-planner.out"
 # A relay operator (or anyone with the wire) replays alice's first table, which still held carol's code.
 python3 - "$T/wire.bin" "$A_ID" "$T/oldtable" <<'PY'
 import re, sys
