@@ -93,7 +93,8 @@ fn page_with_script(body: &str, content_type: &str, script: &str) -> Result<Resp
     h.set("referrer-policy", "no-referrer")?;
     h.set("x-content-type-options", "nosniff")?;
     h.set("strict-transport-security", "max-age=31536000")?;
-    h.set("cache-control", "public, max-age=300")?;
+    // no-transform: the edge must not change the page (for example, inject an analytics script).
+    h.set("cache-control", "public, max-age=300, no-transform")?;
     Ok(r)
 }
 
@@ -271,7 +272,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     }
     if get && !path.starts_with("/v1/") && wants_html(&req) {
         let mut r = page(NOT_FOUND_HTML, "text/html; charset=utf-8")?.with_status(404);
-        r.headers_mut().set("cache-control", "no-store")?;
+        r.headers_mut().set("cache-control", "no-store, no-transform")?;
         r.headers_mut().set("vary", "Accept")?;
         return Ok(r);
     }
