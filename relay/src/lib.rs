@@ -749,7 +749,9 @@ pub struct Stats {
 
 impl Stats {
     fn get(&self, sql: &str, args: Vec<SqlStorageValue>) -> i64 {
-        self.state.storage().sql().exec(sql, Some(args)).and_then(|c| c.one::<Num>()).ok().and_then(|r| r.n).unwrap_or(0)
+        // to_array, not one(): one() throws an uncatchable JS error when there is no row (a fresh relay).
+        let rows = self.state.storage().sql().exec(sql, Some(args)).and_then(|c| c.to_array::<Num>());
+        rows.ok().and_then(|r| r.into_iter().next()).and_then(|r| r.n).unwrap_or(0)
     }
 
     fn online(&self, h: i64) -> i64 {
