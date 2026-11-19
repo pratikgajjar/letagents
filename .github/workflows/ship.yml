@@ -27,8 +27,8 @@ jobs:
         with: { node-version: 22 }
       - run: cargo test --manifest-path cli/Cargo.toml
       - run: cargo build --release --target wasm32-unknown-unknown --manifest-path relay/Cargo.toml
-      - name: generated page is committed
-        run: python3 web/src/build.py && git diff --exit-code web/index.html
+      - name: generated pages are committed (web/src/build.py output is not stale)
+        run: python3 web/src/build.py && git diff --exit-code -- web/ && test -z "$(git status --porcelain -- web/)"
       - run: cargo install -q worker-build@^0.8
       - name: end-to-end (local relay, two daemons)
         timeout-minutes: 15

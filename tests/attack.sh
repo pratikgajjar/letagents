@@ -53,6 +53,14 @@ import json, re, sys
 s = json.loads(sys.argv[1]); t = json.dumps(s)
 assert not re.search(r"la1\.|[A-Za-z0-9_-]{43}|\b\d+\.\d+\.\d+\.\d+\b", t)' "$S"
   check "prod security.txt" bash -c "curl -fsS $P/.well-known/security.txt | grep -q '^Contact: '"
+  # Docs: curl gets the markdown, a browser gets the page. Retried: an old worker can answer for a few seconds.
+  for _ in 1 2 3 4 5 6; do
+    md=$(curl -sS -o /dev/null -w '%{content_type}' "$P/agents.md")
+    page=$(curl -sS -o /dev/null -w '%{content_type}' -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36' -H 'Accept: text/html' "$P/agents.md")
+    [ "${md%%;*} ${page%%;*}" = "text/markdown text/html" ] && break
+    sleep 10
+  done
+  check "prod /agents.md: markdown for curl ($md), HTML for a browser ($page)" test "${md%%;*} ${page%%;*}" = "text/markdown text/html"
   finish
   exit
 fi

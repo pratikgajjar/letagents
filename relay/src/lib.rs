@@ -9,7 +9,6 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
-use std::sync::OnceLock;
 use worker::*;
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
@@ -40,15 +39,56 @@ const MANIFEST: &str = include_str!("../../web/site.webmanifest");
 /// The not-found page for browsers. Other clients (curl, agents) get the short JSON error.
 const NOT_FOUND_HTML: &str = include_str!("../../web/404.html");
 
-/// Agents fetching "/" with curl, fetch or an explicit text/markdown Accept get the setup guide as markdown.
-fn wants_markdown(req: &Request) -> bool {
+/// Browser pages for the markdown docs, rendered at build time by web/src/build.py from the same sources.
+const AGENTS_HTML: &str = include_str!("../../web/agents.html");
+const PROTOCOL_HTML: &str = include_str!("../../web/protocol.html");
+const SKILL_HTML: &str = include_str!("../../web/skill.html");
+const STRIP_NIGHT: &[u8] = include_bytes!("../../web/strip-night.webp");
+const STRIP_DAWN: &[u8] = include_bytes!("../../web/strip-dawn.webp");
+
+/// Content negotiation for "/", /agents.md, /protocol.md and /skill.md: a page for people, markdown for agents.
+/// HTML only for a clear browser: `Accept` has text/html and the user agent is a browser (Mozilla/..., not an HTTP
+/// library and not an AI fetcher or crawler). Link-preview bots (Slack, X, ...) also get HTML, for the og tags.
+/// Everyone else gets the markdown file unchanged. Overrides: `?raw` or `Accept: text/markdown` give markdown,
+/// `?html` gives HTML. Responses carry `Vary: Accept, User-Agent`.
+fn wants_html_page(req: &Request, url: &Url) -> bool {
+    if let Some(k) = url.query_pairs().map(|(k, _)| k).find(|k| k == "raw" || k == "html") {
+        return k == "html";
+    }
     let h = |k: &str| req.headers().get(k).ok().flatten().unwrap_or_default().to_ascii_lowercase();
     let (accept, ua) = (h("accept"), h("user-agent"));
     if accept.contains("text/markdown") || accept.contains("text/x-markdown") {
+        return false;
+    }
+    if PREVIEW_BOTS.iter().any(|b| ua.contains(b)) {
         return true;
     }
-    !accept.contains("text/html")
-        && ["curl/", "wget/", "httpie", "python-", "go-http-client", "node", "undici", "axios", "okhttp", "reqwest"].iter().any(|a| ua.contains(a))
+    accept.contains("text/html") && ua.starts_with("mozilla/") && !NOT_BROWSERS.iter().any(|a| ua.contains(a))
+}
+
+/// User-agent parts (lower case) that mark a client as not a browser: HTTP libraries and AI fetchers or crawlers.
+const NOT_BROWSERS: &[&str] = &[
+    "curl/", "wget", "httpie", "python", "node", "undici", "axios", "go-http-client", "okhttp", "reqwest", "deno", "bun/", "java/",
+    "gptbot", "chatgpt", "oai-searchbot", "openai", "claudebot", "claude-user", "claude-searchbot", "claude-web", "anthropic",
+    "perplexity", "google-extended", "googleother", "ccbot", "bytespider", "amazonbot", "applebot-extended", "meta-externalagent",
+    "meta-externalfetcher", "cohere", "mistralai", "diffbot", "youbot", "duckassistbot", "ai2bot", "timpibot", "petalbot",
+];
+
+/// Link-preview fetchers that read the og tags of a page and show it to people.
+const PREVIEW_BOTS: &[&str] = &[
+    "slackbot", "twitterbot", "facebookexternalhit", "linkedinbot", "discordbot", "telegrambot", "whatsapp", "skypeuripreview",
+    "mastodon", "bluesky", "iframely", "embedly",
+];
+
+/// A markdown doc or its rendered page, by `wants_html_page`.
+fn doc(req: &Request, url: &Url, md: &str, html: &'static str) -> Result<Response> {
+    let mut r = if wants_html_page(req, url) {
+        page_with_script(html, "text/html; charset=utf-8", &inline_script_hash(html))?
+    } else {
+        page(md, "text/markdown; charset=utf-8")?
+    };
+    r.headers_mut().set("vary", "Accept, User-Agent")?;
+    Ok(r)
 }
 
 // Cost design: nothing is kept for long, every mailbox is small, idle mailboxes delete themselves,
@@ -170,23 +210,23 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let get = method == Method::Get;
     match (method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
-            let mut r = if wants_markdown(&req) {
-                page(AGENTS_MD, "text/markdown; charset=utf-8")?
+            let mut r = if wants_html_page(&req, &url) {
+                page_with_script(&with_stats(&stats(&env, &url).await), "text/html; charset=utf-8", &inline_script_hash(INDEX_HTML))?
             } else {
-                page_with_script(&with_stats(&stats(&env, &url).await), "text/html; charset=utf-8", chart_script_hash())?
+                page(AGENTS_MD, "text/markdown; charset=utf-8")?
             };
             r.headers_mut().set("vary", "Accept, User-Agent")?;
             r.headers_mut().set("link", r#"</agents.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="alternate"; type="text/plain""#)?;
             return Ok(r);
         }
-        (Method::Get, "/agents.md") => return page(AGENTS_MD, "text/markdown; charset=utf-8"),
-        (Method::Get, "/skill.md") | (Method::Get, "/SKILL.md") => return page(SKILL_MD, "text/markdown; charset=utf-8"),
+        (Method::Get, "/agents.md") => return doc(&req, &url, AGENTS_MD, AGENTS_HTML),
+        (Method::Get, "/skill.md") | (Method::Get, "/SKILL.md") => return doc(&req, &url, SKILL_MD, SKILL_HTML),
         (Method::Get, "/llms.txt") => return page(LLMS_TXT, "text/plain; charset=utf-8"),
         (Method::Get, "/llms-full.txt") => return page(LLMS_FULL, "text/plain; charset=utf-8"),
         (Method::Get, "/robots.txt") => return page(ROBOTS, "text/plain; charset=utf-8"),
         (Method::Get, "/sitemap.xml") => return page(SITEMAP, "application/xml; charset=utf-8"),
         (Method::Get, "/.well-known/security.txt") | (Method::Get, "/security.txt") => return page(SECURITY_TXT, "text/plain; charset=utf-8"),
-        (Method::Get, "/protocol.md") => return page(PROTOCOL_MD, "text/markdown; charset=utf-8"),
+        (Method::Get, "/protocol.md") | (Method::Get, "/PROTOCOL.md") => return doc(&req, &url, PROTOCOL_MD, PROTOCOL_HTML),
         (Method::Get, "/install.sh") => return page(INSTALL_SH, "text/plain; charset=utf-8"),
         (Method::Get, "/la.mjs") => return page(LA_MJS, "text/javascript; charset=utf-8"),
         (Method::Get, "/stats.json") => {
@@ -199,6 +239,8 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/x.png") => return image(X_PNG, "image/png"),
         (Method::Get, "/art-night.webp") => return image(ART_NIGHT, "image/webp"),
         (Method::Get, "/art-dawn.webp") => return image(ART_DAWN, "image/webp"),
+        (Method::Get, "/strip-night.webp") => return image(STRIP_NIGHT, "image/webp"),
+        (Method::Get, "/strip-dawn.webp") => return image(STRIP_DAWN, "image/webp"),
         (Method::Get, "/favicon.svg") => return image(FAVICON_SVG, "image/svg+xml"),
         (Method::Get, "/favicon.ico") => return image(FAVICON_ICO, "image/x-icon"),
         (Method::Get, "/apple-touch-icon.png") | (Method::Get, "/apple-touch-icon-precomposed.png") => return image(APPLE_TOUCH_ICON, "image/png"),
@@ -732,14 +774,12 @@ fn fmt_n(n: i64) -> String {
     out
 }
 
-/// CSP source for the chart script on the home page: the SHA-256 of the one plain `<script>` element.
-fn chart_script_hash() -> &'static str {
-    static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| {
-        let Some((_, rest)) = INDEX_HTML.split_once("<script>") else { return String::new() };
-        let Some((js, _)) = rest.split_once("</script>") else { return String::new() };
-        format!("'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(js.as_bytes())))
-    })
+/// CSP source for the one plain `<script>` element of a page (the home page chart, the docs' copy buttons and
+/// contents): its SHA-256. A few microseconds per page view, so it is not cached.
+fn inline_script_hash(html: &str) -> String {
+    let Some((_, rest)) = html.split_once("<script>") else { return String::new() };
+    let Some((js, _)) = rest.split_once("</script>") else { return String::new() };
+    format!("'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(js.as_bytes())))
 }
 
 /// The page with the counters filled in (readable with scripts off) and the series for the chart.

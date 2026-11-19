@@ -236,8 +236,52 @@ if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); m=s["messages"]; asse
 else
   fail "stats.json ($STATS)"
 fi
-PAGE=$(curl -fsS -H 'Accept: text/html' "$RELAY/")
+BROWSER_UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+BROWSER_ACCEPT='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+PAGE=$(curl -fsS -A "$BROWSER_UA" -H "Accept: $BROWSER_ACCEPT" "$RELAY/")
 if grep -q "machines online" <<<"$PAGE" && grep -q '"peak_online"' <<<"$PAGE" && ! grep -q "__ONLINE__\|__MSGS_\|__STATS_" <<<"$PAGE"; then ok "home page shows live counters"; else fail "home page counters"; fi
+
+# ---------- docs: a page for browsers, the markdown file for everyone else ----------
+# get <path> <out> [curl args...]: body to <out>, headers to <out>.h (lower case)
+get() { local p=$1 o=$2; shift 2; curl -sS -o "$o" -D - "$@" "$RELAY$p" | tr -d '\r' | tr 'A-Z' 'a-z' >"$o.h"; }
+is_md() { grep -q '^content-type: text/markdown' "$1.h" && cmp -s "$1" "$2"; }
+is_html() { grep -q '^content-type: text/html' "$1.h" && head -c 15 "$1" | grep -q '<!doctype html>' && grep -q "^content-security-policy: .*script-src 'sha256-" "$1.h"; }
+varied() { grep -q '^vary: accept, user-agent$' "$1.h"; }
+B=(-A "$BROWSER_UA" -H "Accept: $BROWSER_ACCEPT")
+for d in "/:web/agents.md" "/agents.md:web/agents.md" "/protocol.md:PROTOCOL.md" "/PROTOCOL.md:PROTOCOL.md" "/skill.md:skills/letagents/SKILL.md" "/SKILL.md:skills/letagents/SKILL.md"; do
+  p=${d%%:*} src=$ROOT/${d#*:} o=$T/doc
+  get "$p" "$o"; check "$p: curl gets the markdown, byte for byte" is_md "$o" "$src"
+  check "$p: Vary: Accept, User-Agent" varied "$o"
+  get "$p" "$o" -H 'Accept: text/html'; check "$p: curl with Accept text/html still gets markdown" is_md "$o" "$src"
+  get "$p" "$o" "${B[@]}"; check "$p: a browser gets the HTML page" is_html "$o"
+  check "$p: Vary on the HTML page too" varied "$o"
+  get "$p?raw" "$o" "${B[@]}"; check "$p?raw: a browser gets markdown" is_md "$o" "$src"
+  get "$p" "$o" -A "$BROWSER_UA" -H 'Accept: text/markdown, text/html;q=0.9'; check "$p: Accept text/markdown wins" is_md "$o" "$src"
+  get "$p?html" "$o"; check "$p?html: curl gets the HTML page" is_html "$o"
+done
+for bot in 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)' \
+  'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; GPTBot/1.2; +https://openai.com/gptbot' \
+  'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot' \
+  'Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)' 'python-requests/2.32.3' 'node' 'axios/1.7.7'; do
+  get /agents.md "$T/doc" -A "$bot" -H "Accept: $BROWSER_ACCEPT"
+  check "AI fetcher or library gets markdown, also with Accept text/html (${bot:0:60})" is_md "$T/doc" "$ROOT/web/agents.md"
+done
+get /agents.md "$T/doc" -A 'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)'
+check "a link-preview bot gets the HTML page (og tags)" is_html "$T/doc"
+for p in /llms.txt /llms-full.txt /security.txt /install.sh; do
+  get "$p" "$T/doc" "${B[@]}"; check "$p stays plain text for a browser" grep -q '^content-type: text/plain' "$T/doc.h"
+done
+get /protocol.md "$T/doc" "${B[@]}"
+check "protocol page: canonical, markdown alternate, og tags, copy script" bash -c 'grep -q "<link rel=\"canonical\" href=\"https://letagents.talk/protocol.md\">" "$0" && grep -q "<link rel=\"alternate\" type=\"text/markdown\" href=\"?raw\"" "$0" && grep -q "og:image\" content=\"https://letagents.talk/og.png" "$0" && grep -q "<h2 id=\"sealing\">" "$0"' "$T/doc"
+check "protocol page: the CSP hash matches its script" python3 -c '
+import base64, hashlib, re, sys
+html, hdr = open(sys.argv[1]).read(), open(sys.argv[1] + ".h").read()
+js = html.split("<script>", 1)[1].split("</script>", 1)[0]
+h = base64.b64encode(hashlib.sha256(js.encode()).digest()).decode().lower()
+assert "sha256-" + h in hdr, (h, hdr)' "$T/doc"
+for img in /strip-night.webp /strip-dawn.webp; do
+  check "$img is served (under 30 KB)" bash -c '[ "$(curl -fsS -o /dev/null -w "%{http_code} %{content_type}" "$0")" = "200 image/webp" ] && [ "$(curl -fsS "$0" | wc -c)" -lt 30000 ]' "$RELAY$img"
+done
 
 # ---------- MCP Events: the official conformance suite ----------
 # modelcontextprotocol/conformance PR 521 (SEP-3415 server scenarios), pinned. The runner speaks Streamable
