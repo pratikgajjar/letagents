@@ -1,6 +1,6 @@
 name: ship
-# Every push to main: test, deploy the relay, and publish a release when
-# cli/Cargo.toml has a version with no matching v* tag yet.
+# Every push to main: test, move relay-live to the tested commit (Cloudflare Workers Builds deploys that
+# branch), check production, and publish a release when cli/Cargo.toml has a version with no matching v* tag yet.
 on:
   push:
     branches: [main]
@@ -43,31 +43,43 @@ jobs:
         timeout-minutes: 15
         run: tests/cost.sh
 
-  deploy-relay:
+  # Cloudflare Workers Builds deploys the relay from the relay-live branch with its own credential (no
+  # Cloudflare token in GitHub). Only a commit that passed `test` reaches that branch.
+  promote:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    concurrency: { group: promote-relay-live, cancel-in-progress: false }
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-unknown-unknown }
-      - run: cargo install -q worker-build@^0.8
-      - name: wrangler deploy
-        working-directory: relay
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@latest deploy
-      - name: smoke test
+        with: { fetch-depth: 0 }
+      - name: fast-forward relay-live to the tested commit
         run: |
-          for _ in 1 2 3 4 5 6; do
-            if curl -fsS https://letagents.talk/health \
-              && [ "$(curl -s -o /dev/null -w '%{http_code}' https://letagents.talk/llms.txt)" = 200 ]; then
-              echo; echo "smoke ok"; exit 0
-            fi
-            sleep 10
+          git fetch origin relay-live
+          if ! git merge-base --is-ancestor origin/relay-live "$GITHUB_SHA"; then
+            echo "::error::relay-live ($(git rev-parse origin/relay-live)) is not an ancestor of $GITHUB_SHA: not a fast-forward. Fix relay-live by hand (see README, Deploy)."
+            exit 1
+          fi
+          git push origin "$GITHUB_SHA:refs/heads/relay-live"
+
+  prod-check:
+    needs: promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: wait for Cloudflare to serve the tested commit (20 min)
+        run: |
+          for _ in $(seq 60); do
+            live=$(curl -sS -o /dev/null -D - https://letagents.talk/ | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -n 's/^x-letagents-commit: //p')
+            [ "$live" = "$GITHUB_SHA" ] && { echo "live: $live"; exit 0; }
+            echo "live: ${live:-none}, want $GITHUB_SHA"
+            sleep 20
           done
-          echo "smoke test failed"; exit 1
+          echo "::error::letagents.talk did not serve $GITHUB_SHA within 20 minutes (check Workers Builds in the Cloudflare dashboard)"
+          exit 1
       - name: production security probes (read-only, a few GETs)
         run: tests/attack.sh --prod
 

@@ -51,6 +51,7 @@ RELAY=http://127.0.0.1:$PORT
 (cd "$ROOT/relay" && exec npx --yes wrangler@latest dev --ip 127.0.0.1 --port "$PORT" --persist-to "$T/state" --show-interactive-dev-session=false >"$T/relay.log" 2>&1) &
 PIDS+=($!)
 wait_for 300 curl -fsS "$RELAY/health" || die "relay did not start on $RELAY"
+check "relay without a COMMIT var: no x-letagents-commit header" bash -c "! curl -sS -D - -o /dev/null '$RELAY/health' | grep -qi '^x-letagents-commit:'"
 
 # ---------- two machines ----------
 mkdir -p "$T/pi" # empty pi dir: no intercom broker, so mail is queued for inbox readers

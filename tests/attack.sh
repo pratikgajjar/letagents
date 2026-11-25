@@ -52,6 +52,8 @@ if [ "${1:-}" = --prod ]; then
 import json, re, sys
 s = json.loads(sys.argv[1]); t = json.dumps(s)
 assert not re.search(r"la1\.|[A-Za-z0-9_-]{43}|\b\d+\.\d+\.\d+\.\d+\b", t)' "$S"
+  C=$(curl -sS -o /dev/null -D - "$P/stats.json" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -n 's/^x-letagents-commit: //p')
+  check "prod x-letagents-commit is a commit id and nothing else ($C)" grep -qxE '[0-9a-f]{7,40}' <<<"$C"
   check "prod security.txt" bash -c "curl -fsS $P/.well-known/security.txt | grep -q '^Contact: '"
   # Docs: curl gets the markdown, a browser gets the page. Retried: an old worker can answer for a few seconds.
   for _ in 1 2 3 4 5 6; do

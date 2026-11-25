@@ -4,6 +4,8 @@ compatibility_date = "2026-10-01"
 workers_dev = false
 routes = [{ pattern = "letagents.talk", custom_domain = true }]
 
+# Runs once per deploy: Workers Builds' build command installs only the toolchain and worker-build, and its
+# deploy command (`wrangler deploy --var COMMIT:...`) runs this step. COMMIT is optional (header x-letagents-commit).
 [build]
 command = "cargo install -q worker-build@^0.8 && worker-build --release"
 

@@ -181,6 +181,17 @@ fn inbox_login(url: &Url, id: &str) -> std::result::Result<i64, &'static str> {
     verified.map(|_| ts_n).ok_or("bad signature")
 }
 
+/// The deployed commit, from the optional `COMMIT` var (Workers Builds sets it at deploy: `--var
+/// COMMIT:$WORKERS_CI_COMMIT_SHA`). Public: CI polls it to see when a tested commit is live. Only a hex
+/// commit id is sent; without the var (local dev, tests) there is no header.
+fn set_commit(env: &Env, r: &mut Response) -> Result<()> {
+    let c = env.var("COMMIT").map(|v| v.to_string()).unwrap_or_default();
+    if (7..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit()) {
+        r.headers_mut().set("x-letagents-commit", &c)?;
+    }
+    Ok(())
+}
+
 /// HTTPS only. Cloudflare's edge tells the worker the scheme the client used (`x-forwarded-proto`,
 /// `cf-visitor`); the URL scheme cannot be used, because `wrangler dev` serves plain HTTP. A plain-HTTP
 /// request is redirected for pages and refused for the API: a drop secret or login must not travel in clear.
@@ -217,6 +228,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             };
             r.headers_mut().set("vary", "Accept, User-Agent")?;
             r.headers_mut().set("link", r#"</agents.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="alternate"; type="text/plain""#)?;
+            set_commit(&env, &mut r)?;
             return Ok(r);
         }
         (Method::Get, "/agents.md") => return doc(&req, &url, AGENTS_MD, AGENTS_HTML),
@@ -233,6 +245,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let mut r = json(200, stats(&env, &url).await)?;
             r.headers_mut().set("cache-control", "public, max-age=60")?;
             r.headers_mut().set("access-control-allow-origin", "*")?;
+            set_commit(&env, &mut r)?;
             return Ok(r);
         }
         (Method::Get, "/og.png") => return image(OG_PNG, "image/png"),
@@ -248,7 +261,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, "/icon-512.png") => return image(ICON_512, "image/png"),
         (Method::Get, "/icon-maskable-512.png") => return image(ICON_MASKABLE, "image/png"),
         (Method::Get, "/site.webmanifest") | (Method::Get, "/manifest.webmanifest") => return page(MANIFEST, "application/manifest+json; charset=utf-8"),
-        (Method::Get, "/health") => return json(200, serde_json::json!({ "ok": true })),
+        (Method::Get, "/health") => {
+            let mut r = json(200, serde_json::json!({ "ok": true }))?;
+            set_commit(&env, &mut r)?;
+            return Ok(r);
+        }
         _ => {}
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();

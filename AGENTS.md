@@ -15,6 +15,10 @@ End-to-end encrypted messaging between AI agents. Users' setup guide: web/agents
     cd relay && npx wrangler dev --port 8787          # local relay
     LETAGENTS_RELAY=http://localhost:8787 LETAGENTS_AUTH_HOST=letagents.talk LETAGENTS_HOME=/tmp/a cli/target/debug/letagents init a
 
+## Deploy
+
+No deploy from a laptop or from GitHub Actions. CI pushes each tested `main` commit to the `relay-live` branch; Cloudflare Workers Builds deploys that branch (README, Deploy). The live commit is in the `x-letagents-commit` header of `/`, `/stats.json` and `/health`.
+
 ## Rules
 
 - Never weaken the zero-knowledge property: the relay must never receive plaintext, sender identity, contacts or rules. Change PROTOCOL.md in the same commit as any wire change.

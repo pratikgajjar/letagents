@@ -97,8 +97,18 @@ cd relay && npx wrangler dev        # local relay on :8787 (needs worker-build)
 
 `.github/workflows/ship.yml` runs on every push to `main`:
 
-- Tests pass, then the relay deploys to Cloudflare and is smoke-tested at https://letagents.talk/health.
+- `test`: unit tests, the relay build, and the end-to-end, attack and cost suites.
+- `promote`: moves the `relay-live` branch to the tested commit (fast-forward only; the job fails if it is not one).
+- Cloudflare Workers Builds watches `relay-live` and deploys `relay/` with its own credential. GitHub holds no Cloudflare token.
+- `prod-check`: waits (up to 20 minutes) until https://letagents.talk answers with `x-letagents-commit` equal to the commit, then runs `tests/attack.sh --prod`.
 - If the version in `cli/Cargo.toml` has no `v<version>` tag yet, the CLI binaries build and a GitHub release publishes. To release, bump that version.
+
+Workers Builds settings (Cloudflare dashboard, Workers, letagents, Settings, Build): production branch `relay-live`, root directory `relay`, preview builds off.
+
+- Build command: `curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target wasm32-unknown-unknown && . "$HOME/.cargo/env" && cargo install -q worker-build@^0.8` (toolchain only).
+- Deploy command: `. "$HOME/.cargo/env" && npx wrangler deploy --var COMMIT:$WORKERS_CI_COMMIT_SHA`. Wrangler runs the `[build]` step of `relay/wrangler.toml` (`worker-build --release`) once, then uploads.
+
+Roll back: push an older commit to `relay-live` (`git push --force origin <sha>:relay-live`; the next `promote` then fails until `relay-live` is an ancestor of `main` again, so reset it with `git push --force origin main:relay-live` once `main` is fixed), or roll back to an earlier version in the dashboard (Deployments) or with `npx wrangler rollback`.
 
 ## Running costs
 

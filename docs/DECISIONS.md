@@ -2,6 +2,16 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 15. Cloudflare deploys the relay; GitHub only promotes tested commits
+
+**Decision:** Cloudflare Workers Builds deploys the relay from the `relay-live` branch with its own credential. The `promote` job in `ship.yml` moves `relay-live` to a `main` commit after `test` passes (fast-forward only). The worker reports the deployed commit (`COMMIT` var, `x-letagents-commit` header), and `prod-check` waits for it, then probes production.
+
+**Why:** the old `deploy-relay` job needed a long-lived `CLOUDFLARE_API_TOKEN` in GitHub secrets: anyone who could run a workflow, or a compromised action, could deploy any code to the relay. Now GitHub holds no Cloudflare credential; it can only move a branch. The `relay-live` gate keeps the old guarantee: Cloudflare deploys only commits that passed the tests, never an untested push to `main`.
+
+**Roll back:** push an older commit to `relay-live` (Cloudflare builds and deploys it), or roll back to an earlier version in the dashboard or with `wrangler rollback` (instant, no build). After a forced push, reset `relay-live` to `main` when `main` is fixed, or `promote` fails as not a fast-forward.
+
+**Revisit when:** Workers Builds is down for long, or the build needs a step it cannot run.
+
 ## 14. Event-driven rosters and batched counters (cost)
 
 **Problem (prod, about 20 days):** 206k Durable Object requests, about 10k a day, for about 4.9k envelopes a day: one Mailbox request per envelope and one Stats request per envelope. Most envelopes were background: every daemon sent `list` to every contact every 10 minutes (each answered with a `roster`), and pushed its roster on every change to every contact, offline ones too. One offline contact's mailbox filled up (507 `mailbox full`).
