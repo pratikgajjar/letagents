@@ -129,6 +129,10 @@ enum Cmd {
         /// Never gets other agents' mail: senders must name an agent.
         #[arg(long, alias = "target")]
         notify: Option<String>,
+        /// Stay off the pi-intercom broker: local agents reach the daemon through daemon.sock only
+        /// (a router such as Sova takes their mail)
+        #[arg(long)]
+        no_intercom: bool,
     },
     /// Install, remove or show the background service (launchd on macOS, systemd --user on Linux)
     Service {
@@ -657,7 +661,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Daemon { notify } => daemon::run(store::identity()?, notify).await,
+        Cmd::Daemon { notify, no_intercom } => daemon::run(store::identity()?, notify, !no_intercom).await,
         Cmd::Service { action, notify } => service::run(&action, notify.as_deref()),
         Cmd::Mcp { as_ } => mcp::run(as_).await,
     }

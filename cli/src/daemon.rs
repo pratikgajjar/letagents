@@ -11,6 +11,11 @@
 //!     inbox socket (Claude Code cross-session messaging); an idle session starts a turn.
 //!   - Codex: open threads of the shared Codex app-server are local agents `codex-<id>`; a message starts a
 //!     turn on that thread (`turn/start`).
+//!   - A router: one `watch` with `router: true` (a local mailbox such as Sova) takes every message no
+//!     watcher or Codex thread takes, with its target in `to`. It answers `{"ok": false}` for a target it
+//!     does not know, and the message waits in the spool.
+//!
+//! `--no-intercom` keeps the daemon off the pi-intercom broker: then a router is the one local path.
 //!
 //! Primitives over the relay (all sealed): send, ask, reply, list -> roster (who is online), unsolicited
 //! roster (presence), receipt (pushed / queued / refused), hello (contact request). Groups fan out locally.
@@ -31,7 +36,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -335,6 +340,8 @@ struct Hub {
     socket_agents: Mutex<HashMap<String, (String, i64)>>,
     /// MCP servers that push messages into their session (Claude Code): name -> channel
     watchers: Mutex<HashMap<String, mpsc::UnboundedSender<Push>>>,
+    /// The router watch (a local mailbox): takes what no watcher or Codex thread takes
+    router: Mutex<Option<mpsc::UnboundedSender<Push>>>,
     /// open Codex threads: codex-<id> -> thread id
     codex_threads: Mutex<HashMap<String, String>>,
     /// contact proxies ("devbox") and remote-agent proxies ("devbox/planner")
@@ -388,6 +395,12 @@ fn parse_to(s: &str, me: &str, local: &[String]) -> Result<To> {
     bail!("unknown address {s}: use <machine>/<agent>, <machine> or @<group> (see letagents list)")
 }
 
+/// Hand one push to a watch connection; true once its client answered `{"ok": true}`.
+async fn offer(tx: &mpsc::UnboundedSender<Push>, msg: Value) -> bool {
+    let (done, rx) = oneshot::channel();
+    tx.send(Push { msg, done }).is_ok() && matches!(tokio::time::timeout(Duration::from_secs(5), rx).await, Ok(Ok(true)))
+}
+
 impl Hub {
     fn save_spool(&self, s: &Spool) {
         let _ = store::write("spool.json", s);
@@ -427,11 +440,10 @@ impl Hub {
     /// its open Codex thread. Never logs the text.
     async fn push(&self, m: &Spooled) -> bool {
         let text = render(m, &self.me.name, note_of(&m.from).as_deref());
+        let msg = json!({ "id": m.id, "from": m.from, "kind": m.kind, "text": text, "to": m.target });
         let tx = self.watchers.lock().unwrap().get(&m.target).cloned();
         if let Some(tx) = tx {
-            let (done, rx) = oneshot::channel();
-            let msg = json!({ "id": m.id, "from": m.from, "kind": m.kind, "text": text });
-            if tx.send(Push { msg, done }).is_ok() && matches!(tokio::time::timeout(Duration::from_secs(5), rx).await, Ok(Ok(true))) {
+            if offer(&tx, msg.clone()).await {
                 return true;
             }
         }
@@ -448,8 +460,17 @@ impl Hub {
                 }
             }
         }
+        if m.target == MACHINE_INBOX {
+            return false;
+        }
+        let router = self.router.lock().unwrap().clone();
+        if let Some(tx) = router {
+            if offer(&tx, msg).await {
+                return true;
+            }
+        }
         // A pi session. An ask pushed this way is answered with `letagents reply`.
-        if m.target != MACHINE_INBOX {
+        {
             let system = self.system.read().unwrap().clone();
             if let Some(sys) = system {
                 let text = if m.kind == "ask" { format!("{text}\n\n(answer with: letagents reply {} \"<text>\")", m.id) } else { text };
@@ -599,7 +620,7 @@ impl Hub {
     }
 }
 
-pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
+pub async fn run(me: Identity, notify: Option<String>, intercom: bool) -> Result<()> {
     let sock = socket_path();
     if UnixStream::connect(&sock).await.is_ok() {
         bail!("a letagents daemon is already running ({})", sock.display());
@@ -627,6 +648,7 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
         local_ask_by_intercom: Mutex::default(),
         socket_agents: Mutex::default(),
         watchers: Mutex::default(),
+        router: Mutex::default(),
         codex_threads: Mutex::default(),
         proxies: RwLock::default(),
         system: RwLock::default(),
@@ -639,7 +661,11 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
     });
     log(format!("socket {} ready; contact requests -> {}", sock.display(), hub.notify.as_deref().unwrap_or(MACHINE_INBOX)));
 
-    tokio::spawn(intercom_manager(hub.clone()));
+    if intercom {
+        tokio::spawn(intercom_manager(hub.clone()));
+    } else {
+        log("pi-intercom off (--no-intercom): local agents use daemon.sock");
+    }
     tokio::spawn(relay_inbox(hub.clone()));
     tokio::spawn(roster_loop(hub.clone()));
     tokio::spawn(presence_loop(hub.clone()));
@@ -1399,6 +1425,9 @@ struct Req {
     /// peek: message ids the caller already knows
     #[serde(default)]
     seen: Vec<String>,
+    /// watch: take every message no other watcher takes (a local mailbox)
+    #[serde(default)]
+    router: bool,
 }
 
 async fn serve_socket(hub: Arc<Hub>, conn: UnixStream) {
@@ -1407,6 +1436,9 @@ async fn serve_socket(hub: Arc<Hub>, conn: UnixStream) {
         let resp = match serde_json::from_value::<Req>(v) {
             Ok(req) if req.op == "watch" => {
                 let Some(me) = req.as_.clone() else { break };
+                if req.router {
+                    return route(hub, me, rd, wr).await;
+                }
                 return watch(hub, me, req.harness, rd, wr).await;
             }
             Ok(req) => {
@@ -1468,6 +1500,60 @@ async fn watch(hub: Arc<Hub>, me: String, harness: Option<String>, mut rd: tokio
     if w.get(&me).is_some_and(|t| t.same_channel(&tx)) {
         w.remove(&me);
         log(format!("{me} stopped watching"));
+    }
+}
+
+/// The router watch: a local mailbox that takes every message no watcher or Codex thread takes, for any
+/// target, with the target in `to`. One at a time; a new one replaces the old. It is not an agent: it is not
+/// in the roster (its agents say `hello` as themselves).
+async fn route(hub: Arc<Hub>, me: String, mut rd: tokio::net::unix::OwnedReadHalf, mut wr: tokio::net::unix::OwnedWriteHalf) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Push>();
+    *hub.router.lock().unwrap() = Some(tx.clone());
+    if wr.write_all(&frame(&json!({ "ok": true }))).await.is_ok() {
+        log(format!("{me} routing: messages for agents without a watcher are pushed to it"));
+        // Mail that waited for an agent: offer it now; what the router does not take goes back to the spool.
+        let waiting: Vec<Spooled> = {
+            let mut s = hub.spool.lock().unwrap();
+            let (mine, rest): (Vec<_>, Vec<_>) = s.msgs.drain(..).partition(|m| m.target != MACHINE_INBOX);
+            s.msgs = rest;
+            if !mine.is_empty() {
+                hub.save_spool(&s);
+            }
+            mine
+        };
+        if !waiting.is_empty() {
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                for m in waiting {
+                    if !hub.push(&m).await {
+                        hub.spool(m, None);
+                    }
+                }
+            });
+        }
+        loop {
+            // Between pushes the router sends nothing: a read that ends means it went away.
+            let next = tokio::select! {
+                p = rx.recv() => p,
+                _ = rd.read_u8() => None,
+            };
+            let Some(p) = next else { break };
+            let posted = async {
+                wr.write_all(&frame(&json!({ "push": p.msg }))).await.ok()?;
+                let v = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut rd)).await.ok()?.ok()?;
+                Some(v["ok"] == json!(true))
+            }
+            .await;
+            let _ = p.done.send(posted == Some(true));
+            if posted.is_none() {
+                break;
+            }
+        }
+    }
+    let mut r = hub.router.lock().unwrap();
+    if r.as_ref().is_some_and(|t| t.same_channel(&tx)) {
+        *r = None;
+        log(format!("{me} stopped routing"));
     }
 }
 
@@ -1549,7 +1635,7 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
             Ok(json!({
                 "ok": true, "name": hub.me.name, "address": store::identity().map(|i| i.peer().address(true)).unwrap_or_default(),
                 "safety": hub.me.peer().safety_number(), "notify": hub.notify,
-                "intercom": hub.system.read().unwrap().is_some(), "waiting": s.msgs.len(),
+                "intercom": hub.system.read().unwrap().is_some(), "router": hub.router.lock().unwrap().is_some(), "waiting": s.msgs.len(),
             }))
         }
         "reload" => {
