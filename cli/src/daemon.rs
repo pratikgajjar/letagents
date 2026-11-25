@@ -342,6 +342,8 @@ struct Hub {
     roster_ts: Mutex<HashMap<String, i64>>,
     /// contact -> address, as this daemon last saw it (a new entry on reload is a new contact)
     known: Mutex<HashMap<String, String>>,
+    /// The start round of roster_loop is done: from now on, reaching the relay again sends lists.
+    started: std::sync::atomic::AtomicBool,
 }
 
 /// An agent's address: `<machine>/<agent>`. (`@` is reserved by pi-intercom for its own routing.)
@@ -625,6 +627,7 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
         peers: Mutex::new(load_pushed()),
         roster_ts: Mutex::default(),
         known: Mutex::new(store::contacts().into_iter().map(|(n, c)| (n, c.address)).collect()),
+        started: std::sync::atomic::AtomicBool::new(false),
     });
     log(format!("socket {} ready; contact requests -> {}", sock.display(), hub.notify.as_deref().unwrap_or(MACHINE_INBOX)));
 
@@ -885,9 +888,10 @@ async fn roster_loop(hub: Arc<Hub>) {
         for c in refresh_drops(start).await {
             let _ = request_roster(&hub, &c, Why::Now).await;
         }
-        // At start the relay login may have asked already (Reach skips a contact asked a moment ago).
+        // Contacts asked a moment ago (a new code) are skipped.
         list_all(&hub, if start { Why::Reach } else { Why::Refresh }, if start { "start" } else { "safety refresh" }).await;
         start = false;
+        hub.started.store(true, std::sync::atomic::Ordering::Relaxed);
         let jitter = 0.9 + 0.2 * rand::random::<f64>();
         tokio::time::sleep(timing(ROSTER_REFRESH).mul_f64(jitter)).await;
     }
@@ -959,6 +963,10 @@ async fn presence_loop(hub: Arc<Hub>) {
 /// An unsolicited roster from `contact`: if we have sent it nothing for a while, it may count us as silent
 /// and hold its next pushes, so answer with our roster (or a `list` if it may not see ours).
 async fn echo_presence(hub: &Hub, contact: &str) {
+    // Before the start round, its `list` tells every contact we are here.
+    if !hub.started.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     // Decide and mark under one lock: rosters that came together (from the mailbox) get one answer.
     {
         let mut peers = hub.peers.lock().unwrap();
@@ -987,9 +995,12 @@ async fn relay_inbox(hub: Arc<Hub>) {
     let mut seen: Seen = store::read("seen.json");
     let me = hub.me.clone();
     let reached = hub.clone();
+    // The first login is covered by roster_loop's start round (after the drop codes are synced).
     let on_reach = move || {
         let hub = reached.clone();
-        tokio::spawn(async move { list_all(&hub, Why::Reach, "relay reached").await });
+        if hub.started.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::spawn(async move { list_all(&hub, Why::Reach, "relay reached").await });
+        }
     };
     relay::live(&me, |env| {
         let hub = hub.clone();

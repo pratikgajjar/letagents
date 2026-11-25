@@ -7,10 +7,10 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 **Problem (prod, about 20 days):** 206k Durable Object requests, about 10k a day, for about 4.9k envelopes a day: one Mailbox request per envelope and one Stats request per envelope. Most envelopes were background: every daemon sent `list` to every contact every 10 minutes (each answered with a `roster`), and pushed its roster on every change to every contact, offline ones too. One offline contact's mailbox filled up (507 `mailbox full`).
 
 **Decision, client (0.6.1):**
-- `list` goes out at daemon start, each time the relay is reached again (WSS ready, or the first HTTPS fetch that works after a loss), to a new contact (reload, invite), for a new drop code (ours, once the relay holds it, or theirs from a message we do not answer), when a person runs `letagents list`, and every 6 h ± 10 % as a safety net. Start, reach and refresh lists are bounded: none while an earlier list to that contact is unanswered (it waits in the contact's mailbox, and the contact asks when it comes back), and a reach list at most every 10 minutes per contact.
+- `list` goes out at daemon start (once the drop codes are synced, so it carries new ones), each time the relay is reached again after that (WSS ready, or the first HTTPS fetch that works after a loss), to a new contact (reload, invite), for a new drop code (ours, once the relay holds it, or theirs from a message we do not answer), when a person runs `letagents list`, and every 6 h ± 10 % as a safety net. Start, reach and refresh lists are bounded: none while an earlier list to that contact is unanswered (it waits in the contact's mailbox, and the contact asks when it comes back), and a reach list at most every 10 minutes per contact.
 - Presence is per contact: a contact gets a push when its view of our agents (name, harness; bound agents filtered) differs from what it last got, at most one a minute (the last state wins). What each contact last got is kept in `presence.json`, so a restart pushes only changes.
 - A contact we have not heard from (any verified envelope) for 30 minutes gets one push, and the next ones wait until it writes. When it comes back it sends `list` and gets the current roster.
-- Two machines both online but quiet for 30 minutes would each count the other as silent. So a daemon answers an unsolicited roster with its own (or a `list`, if the contact may not see ours) when it has sent that contact nothing for 15 minutes; the contact hears it, and its pushes go on. The answer waits 3 s, so stored rosters that come just before a relay login are covered by that login's `list` instead.
+- Two machines both online but quiet for 30 minutes would each count the other as silent. So a daemon answers an unsolicited roster with its own (or a `list`, if the contact may not see ours) when it has sent that contact nothing for 15 minutes; the contact hears it, and its pushes go on. The answer waits 3 s and is never sent before the start round, so stored rosters that come just before a relay login are covered by that login's `list` instead.
 - A roster older than the one we keep (it waited in the mailbox) is ignored.
 
 **Decision, relay:** a mailbox counts accepted envelopes in its own meta (`sent_p`: `<hour>:<n>` pairs, at most 48 hours) and sends them as `sent_h=<hour>:<n>` with its next Stats call: when Stats is called anyway (hourly online marker, first login), on an event it handles (send, login, ack, drop table) at most every 10 minutes, and always on close, error and alarm. No timer or alarm wakes a mailbox for the counters. Stats adds each count to the hour it happened in, so the chart stays right after a late flush; still no ids.
@@ -19,11 +19,11 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 
 | scenario (one hour) | base | new | cut |
 |---|---|---|---|
-| default | 185 | 47 | 74 % |
+| default | 185 | 48 | 74 % |
 | no messages, only presence | 157 | 33 | 78 % |
-| agents change every 6 minutes | 239 | 68 | 71 % |
+| agents change every 6 minutes | 239 | 70 | 70 % |
 
-Counting every DO event 1:1 (WebSocket acks too): 269 → 76 (71 %) in the default scenario. Stats requests fell from 90 to 11. Envelopes sent by users (and their receipts) are not cut: the more of them, the smaller the cut. Prod traffic was mostly background, so expect about 80 % there. The same run checks that an offline contact gets the current roster when it comes back, that rosters converge after a quiet spell, and that `/stats.json` totals match the accepted envelopes after the late flushes; `tests/e2e.sh` checks that a new agent reaches a contact within 60 s.
+Counting every DO event 1:1 (WebSocket acks too): 269 → 77 (71 %) in the default scenario. Stats requests fell from 90 to 12. Envelopes sent by users (and their receipts) are not cut: the more of them, the smaller the cut. Prod traffic was mostly background, so expect about 80 % there. The same run checks that an offline contact gets the current roster when it comes back, that rosters converge after a quiet spell, and that `/stats.json` totals match the accepted envelopes after the late flushes; `tests/e2e.sh` checks that a new agent reaches a contact within 60 s.
 
 **Keep true:** nothing new on the wire and nothing new for the relay: it sees fewer envelopes, and counts without ids. Test-only knobs (`LETAGENTS_TEST_SPEEDUP`, `STATS_FLUSH_MS`, `LA_COUNT_DO`) are off unless set.
 
