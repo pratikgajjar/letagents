@@ -2,6 +2,33 @@
 
 Each entry: the decision, the reason, and what would change it. Newest first.
 
+## 14. Event-driven rosters and batched counters (cost)
+
+**Problem (prod, about 20 days):** 206k Durable Object requests, about 10k a day, for about 4.9k envelopes a day: one Mailbox request per envelope and one Stats request per envelope. Most envelopes were background: every daemon sent `list` to every contact every 10 minutes (each answered with a `roster`), and pushed its roster on every change to every contact, offline ones too. One offline contact's mailbox filled up (507 `mailbox full`).
+
+**Decision, client (0.6.1):**
+- `list` goes out at daemon start, each time the relay is reached again (WSS ready, or the first HTTPS fetch that works after a loss), to a new contact (reload, invite), for a new drop code (ours, once the relay holds it, or theirs from a message we do not answer), when a person runs `letagents list`, and every 6 h ± 10 % as a safety net. Start, reach and refresh lists are bounded: none while an earlier list to that contact is unanswered (it waits in the contact's mailbox, and the contact asks when it comes back), and a reach list at most every 10 minutes per contact.
+- Presence is per contact: a contact gets a push when its view of our agents (name, harness; bound agents filtered) differs from what it last got, at most one a minute (the last state wins). What each contact last got is kept in `presence.json`, so a restart pushes only changes.
+- A contact we have not heard from (any verified envelope) for 30 minutes gets one push, and the next ones wait until it writes. When it comes back it sends `list` and gets the current roster.
+- Two machines both online but quiet for 30 minutes would each count the other as silent. So a daemon answers an unsolicited roster with its own (or a `list`, if the contact may not see ours) when it has sent that contact nothing for 15 minutes; the contact hears it, and its pushes go on. The answer waits 3 s, so stored rosters that come just before a relay login are covered by that login's `list` instead.
+- A roster older than the one we keep (it waited in the mailbox) is ignored.
+
+**Decision, relay:** a mailbox counts accepted envelopes in its own meta (`sent_p`: `<hour>:<n>` pairs, at most 48 hours) and sends them as `sent_h=<hour>:<n>` with its next Stats call: when Stats is called anyway (hourly online marker, first login), on an event it handles (send, login, ack, drop table) at most every 10 minutes, and always on close, error and alarm. No timer or alarm wakes a mailbox for the counters. Stats adds each count to the hour it happened in, so the chart stays right after a late flush; still no ids.
+
+**Measured (tests/cost.sh, in CI):** two local relays with three daemons each (a, b, c, all contacts), one hour of use in 3 minutes (`LETAGENTS_TEST_SPEEDUP=20`). Base: the 0.6.0 client with the same speed-up and the relay with `STATS_FLUSH_MS=0` (one Stats request per envelope, as before). Agents change every 20 minutes on a and on b, b writes to a every 10 minutes, c is offline for 40 minutes. Billed requests (incoming WebSocket messages at 20:1, as Cloudflare counts them):
+
+| scenario (one hour) | base | new | cut |
+|---|---|---|---|
+| default | 185 | 47 | 74 % |
+| no messages, only presence | 157 | 33 | 78 % |
+| agents change every 6 minutes | 239 | 68 | 71 % |
+
+Counting every DO event 1:1 (WebSocket acks too): 269 → 76 (71 %) in the default scenario. Stats requests fell from 90 to 11. Envelopes sent by users (and their receipts) are not cut: the more of them, the smaller the cut. Prod traffic was mostly background, so expect about 80 % there. The same run checks that an offline contact gets the current roster when it comes back, that rosters converge after a quiet spell, and that `/stats.json` totals match the accepted envelopes after the late flushes; `tests/e2e.sh` checks that a new agent reaches a contact within 60 s.
+
+**Keep true:** nothing new on the wire and nothing new for the relay: it sees fewer envelopes, and counts without ids. Test-only knobs (`LETAGENTS_TEST_SPEEDUP`, `STATS_FLUSH_MS`, `LA_COUNT_DO`) are off unless set.
+
+**Revisit when:** a contact must see a change within a minute after a quiet spell longer than 30 minutes on both sides (the echo handles it, but costs one envelope per spell), contacts run clients that never answer an unsolicited roster or a `list` (they stay silent: one push per spell), or Cloudflare bills WebSocket messages 1:1 (then batch acks, which needs a wire change).
+
 ## 13. Bind a contact to one local agent (local rules with an outbound part)
 
 **Decision:** `--agent <agent>` on `join`, `invite`, `contact add` and `contact accept`, and `contact bind <contact> <agent>` for a contact that exists, bind a contact to one local agent. The binding writes the contact's inbound rules (`* -> <agent>: send,ask,reply`, then `* -> *: nothing`, so no `list` and no roster) and adds an outbound check in the daemon: the bound agent may send, ask and reply only to that contact, on every path (`daemon.sock`, `letagents mcp`, the pi-intercom adapter). Other contacts cannot reach a bound agent and do not see it in rosters. An invite keeps its binding (`invite_binds.json`, by code hash) and applies it in the same write that adds the guest. `--note` keeps a reminder per contact, shown in its labels (`[letagents · verified x/alice · note: external engineer]`); it is not a control. Nothing goes on the wire: the relay and the contact learn nothing.
@@ -20,7 +47,7 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 
 **Decision:** each machine gives each contact its own drop code. The relay keeps SHA-256 of each code (at most 64 per mailbox, sorted, no names) next to the shared code's hash; the owner replaces the table with a signed, newer-`ts` request. Codes travel only inside sealed messages (`drop`, until the contact confirms with `drop_ok`), in a hello's `from`, and in invites: every invite carries a code of its own, which becomes the joiner's code. `letagents remove <contact>` (`contact rm`) deletes the contact's code at the relay, so the relay refuses its sends with 404 and stores nothing.
 
-**Migration rule:** an existing contact gets its code on the next exchange (the daemon's `list` at start and every 10 minutes carries it), and confirms with `drop_ok` in its answer. The shared code stays valid while any contact has not confirmed (older versions never do), and for new contacts added by a bare `whoami` address. Removing a contact replaces the shared code (the removed contact may know it): at once if every remaining contact has its own code, else as soon as the last one confirms or is removed; `remove` names the contacts that hold it up.
+**Migration rule:** an existing contact gets its code on the next exchange (the daemon's `list` at start, for a new code, and in the 6-hourly refresh carries it; see #14), and confirms with `drop_ok` in its answer. The shared code stays valid while any contact has not confirmed (older versions never do), and for new contacts added by a bare `whoami` address. Removing a contact replaces the shared code (the removed contact may know it): at once if every remaining contact has its own code, else as soon as the last one confirms or is removed; `remove` names the contacts that hold it up.
 
 **Why not drop the shared code as soon as every contact has moved:** then a `whoami` address would stop working, a fresh machine (no contacts) would have no working bare address at all, and only invites could connect machines. Replacing it on removal gives the same protection against removed contacts and keeps `contact add <address>` working.
 

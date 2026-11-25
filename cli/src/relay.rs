@@ -345,18 +345,33 @@ fn next_poll(cur: Duration, base: Duration, got_mail: bool) -> Duration {
 /// Live inbox over WSS. Calls `on_msg` for each stored or new envelope and acks it afterwards.
 /// A connected WSS costs the relay nothing while idle (hibernation). When WSS is unavailable, it fetches
 /// over HTTPS with backoff (an empty inbox doubles the wait, up to 2 minutes) and tries WSS every 5 minutes.
-pub async fn live<F, Fut>(me: &Identity, mut on_msg: F) -> !
+/// `on_reach` runs each time the relay is reached again: a WSS login is ready (stored mail came first), or
+/// the first HTTPS fetch that works after the relay was lost.
+pub async fn live<F, Fut, R>(me: &Identity, mut on_msg: F, on_reach: R) -> !
 where
     F: FnMut(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = ()>,
+    R: Fn(),
 {
     let poll = poll_interval(std::env::var("LETAGENTS_POLL_SECS").ok().as_deref());
     let mut wait = poll;
     let mut wss_at = tokio::time::Instant::now();
+    let mut reached = false;
+    let polled = |r: Option<bool>, reached: &mut bool| {
+        match r {
+            Some(_) if !*reached => {
+                *reached = true;
+                on_reach();
+            }
+            None => *reached = false,
+            _ => {}
+        }
+        r == Some(true)
+    };
     loop {
         if tokio::time::Instant::now() < wss_at {
             // Polling mode: WSS failed recently.
-            let got = poll_once(me, &mut on_msg).await;
+            let got = polled(poll_once(me, &mut on_msg).await, &mut reached);
             wait = next_poll(wait, poll, got);
             tokio::time::sleep(wait).await;
             continue;
@@ -378,7 +393,11 @@ where
                             struct F { t: String, seq: Option<i64>, ct: Option<String>, drops: Option<i64> }
                             let Ok(f) = serde_json::from_str::<F>(t.as_str()) else { continue };
                             match (f.t.as_str(), f.seq, f.ct) {
-                                ("ready", _, _) => check_drops(f.drops),
+                                ("ready", _, _) => {
+                                    check_drops(f.drops);
+                                    reached = false;
+                                    polled(Some(false), &mut reached);
+                                }
                                 ("msg", Some(seq), Some(ct)) => {
                                     if let Ok(b) = B64.decode(ct) { on_msg(b).await; }
                                     let _ = tx.send(Message::text(format!(r#"{{"t":"ack","seq":{seq}}}"#))).await;
@@ -389,6 +408,7 @@ where
                     }
                 }
                 eprintln!("inbox: disconnected");
+                reached = false;
                 // A connection that lived a while reconnects at once (stored mail comes on connect);
                 // one that dropped quickly waits, so a flapping link cannot hammer the relay.
                 tokio::time::sleep(if started.elapsed() > Duration::from_secs(60) { Duration::from_secs(1) } else { poll }).await;
@@ -400,13 +420,13 @@ where
         eprintln!("inbox: polling via https (wss again in {} s)", WSS_RETRY.as_secs());
         wss_at = tokio::time::Instant::now() + WSS_RETRY;
         wait = poll;
-        poll_once(me, &mut on_msg).await;
+        polled(poll_once(me, &mut on_msg).await, &mut reached);
         tokio::time::sleep(wait).await;
     }
 }
 
-/// One HTTPS fetch + ack. True when mail came.
-async fn poll_once<F, Fut>(me: &Identity, on_msg: &mut F) -> bool
+/// One HTTPS fetch + ack. Some(true) when mail came, None when the relay was not reached.
+async fn poll_once<F, Fut>(me: &Identity, on_msg: &mut F) -> Option<bool>
 where
     F: FnMut(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = ()>,
@@ -424,11 +444,11 @@ where
             if let Err(e) = ack(me, &seqs).await {
                 eprintln!("inbox: https ack failed: {e}");
             }
-            !seqs.is_empty()
+            Some(!seqs.is_empty())
         }
         Err(e) => {
             eprintln!("inbox: https fetch failed: {e}");
-            false
+            None
         }
     }
 }

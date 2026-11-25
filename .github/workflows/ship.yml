@@ -39,6 +39,9 @@ jobs:
       - name: attacks (outsider, relay operator, invites, local machine, pi-intercom)
         timeout-minutes: 12
         run: tests/attack.sh
+      - name: cost (Durable Object requests, 0.6.0 behaviour vs this tree, one hour in 3 minutes)
+        timeout-minutes: 15
+        run: tests/cost.sh
 
   deploy-relay:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

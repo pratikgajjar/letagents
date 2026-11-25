@@ -283,7 +283,10 @@ assert dbs
 for f in dbs:
     db = sqlite3.connect(f)
     keys = {k for (k,) in db.execute("SELECT k FROM meta")}
-    assert keys <= {"drop_hash", "last_auth_ts", "last_seen", "live_h", "counted", "drops_ts"}, keys
+    assert keys <= {"drop_hash", "last_auth_ts", "last_seen", "live_h", "counted", "drops_ts", "sent_p", "stats_at"}, keys
+    # Envelope counts waiting for the Stats object: <hour>:<n> pairs, nothing else.
+    for (v,) in db.execute("SELECT v FROM meta WHERE k = \"sent_p\""):
+        assert re.fullmatch(r"\d+:\d+(,\d+:\d+)*", v), v
     drops = db.execute("SELECT h, exp FROM drops").fetchall() if db.execute("SELECT 1 FROM sqlite_master WHERE name = \"drops\"").fetchone() else []
     assert len(drops) <= 64 and all(re.fullmatch(r"[A-Za-z0-9_-]{43}", h) and isinstance(e, int) for h, e in drops), drops
     rows = repr(db.execute("SELECT * FROM meta").fetchall()).encode() + repr(drops).encode() + b"".join(ct for (ct,) in db.execute("SELECT ct FROM msgs"))

@@ -119,6 +119,16 @@ if [ "$(grep -c -- "-> queued" <<<"$out")" = 2 ]; then ok "group send: 2 receipt
 check "group send: alice/ops got it" inbox_has alice ops "standup at 10"
 check "group send: alice/planner got it" inbox_has alice planner "standup at 10"
 
+# ---------- presence: a new agent shows up at the contact ----------
+# Event-driven rosters (docs/DECISIONS.md #14): the push on change, at most one a minute per contact.
+start=$(date +%s)
+la alice inbox --as newcomer --wait 1 >/dev/null 2>&1
+if wait_for 60 grep -q "roster from alice: .*newcomer" "$T/bob.log"; then
+  ok "presence: bob sees alice/newcomer in $(($(date +%s) - start)) s (at most 60)"
+else
+  fail "presence: alice/newcomer did not reach bob in 60 s"
+fi
+
 # ---------- per-contact drop codes ----------
 # Added by bare addresses (the shared code), alice and bob move to codes of their own on the first exchange.
 own_code() { python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[sys.argv[2]]; sys.exit(0 if c.get("our_drop") and c.get("our_drop_ok") else 1)' "$T/$1/contacts.json" "$2"; }

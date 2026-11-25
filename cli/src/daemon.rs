@@ -44,8 +44,32 @@ const REDELIVER_EVERY: Duration = Duration::from_secs(15);
 pub const MACHINE_INBOX: &str = "inbox";
 /// A remote agent's plain send goes back to the local agent that wrote to it within this window.
 const LAST_PEER_TTL_MS: i64 = 60 * 60 * 1000;
-const ROSTER_REFRESH: Duration = Duration::from_secs(600);
+/// Rosters are event-driven (docs/DECISIONS.md #14): a `list` at start, when the relay is reached again, for a
+/// new contact and for a new drop code; presence pushes on change. This slow refresh is a safety net only.
+const ROSTER_REFRESH: Duration = Duration::from_secs(6 * 3600);
+/// How often the set of local agents is checked (local only: nothing is sent unless it changed).
 const PRESENCE_CHECK: Duration = Duration::from_secs(30);
+/// A contact we have not heard from for this long may be offline: it gets one roster push, then the rest
+/// waits until it writes (it asks for a `list` when it comes back).
+const SILENT: Duration = Duration::from_secs(30 * 60);
+/// At most one presence push per contact this often; the last state wins.
+const PRESENCE_GAP: Duration = Duration::from_secs(60);
+/// An unsolicited roster is answered (echo_presence) after this delay, if still needed.
+const ECHO_DELAY: Duration = Duration::from_secs(3);
+/// When the relay is reached again, a contact gets a `list` at most this often.
+const REACH_LIST_GAP: Duration = Duration::from_secs(10 * 60);
+
+/// `d` for this daemon. Tests only: LETAGENTS_TEST_SPEEDUP=<n> divides the roster and presence intervals
+/// above by n (tests/cost.sh runs an hour in a few minutes). Never set by the service.
+fn timing(d: Duration) -> Duration {
+    static SPEEDUP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let n = *SPEEDUP.get_or_init(|| std::env::var("LETAGENTS_TEST_SPEEDUP").ok().and_then(|v| v.parse().ok()).filter(|n| *n >= 1).unwrap_or(1));
+    d / n
+}
+
+fn ms(d: Duration) -> i64 {
+    timing(d).as_millis() as i64
+}
 /// MCP agents heartbeat every 60 s; one missed by 3 minutes has left.
 const SOCKET_AGENT_TTL_MS: i64 = 3 * 60 * 1000;
 /// A contact's roster becomes local intercom sessions; at most this many per contact.
@@ -189,6 +213,96 @@ fn render(m: &Spooled, machine: &str, note: Option<&str>) -> String {
     }
 }
 
+/// What this daemon knows about talking with one contact. Times are wall-clock ms (a monotonic clock stops
+/// while a laptop sleeps, and silence must count that time).
+#[derive(Default)]
+struct PeerState {
+    /// When the last verified envelope from it was written (its clock, at most our now; 0: none since start).
+    heard: i64,
+    /// When we got the last verified envelope from it (our clock).
+    got: i64,
+    /// Last envelope we sent it.
+    sent: i64,
+    /// Last `list` we sent it.
+    listed: i64,
+    /// The roster (name, harness) it last got from us, and when.
+    pushed: Option<Vec<(String, String)>>,
+    pushed_at: i64,
+    /// It is silent and already got its one push: hold the rest until it writes.
+    held: bool,
+}
+
+impl PeerState {
+    fn silent(&self, now: i64) -> bool {
+        now - self.heard > ms(SILENT)
+    }
+
+    /// Should it get a `list` now, for `why`?
+    fn list_due(&self, why: Why, now: i64) -> bool {
+        let unanswered = self.listed > self.got && now - self.listed < crate::crypto::MAX_AGE_MS;
+        match why {
+            Why::Now => true,
+            Why::Refresh => !unanswered,
+            Why::Reach => !unanswered && now - self.listed >= ms(REACH_LIST_GAP),
+        }
+    }
+
+    /// Should it get a presence push of roster `key` now? Some(silent) if yes.
+    fn push_due(&self, key: &[(String, String)], now: i64) -> Option<bool> {
+        if self.pushed.as_deref() == Some(key) || now - self.pushed_at < ms(PRESENCE_GAP) {
+            return None;
+        }
+        let silent = self.silent(now);
+        if silent && self.held {
+            return None;
+        }
+        Some(silent)
+    }
+}
+
+/// Why we ask a contact for its roster.
+#[derive(Clone, Copy, PartialEq)]
+enum Why {
+    /// A new contact, a new drop code, or a person asked: always.
+    Now,
+    /// The relay was reached again: not if we asked it within REACH_LIST_GAP, nor while an earlier list is
+    /// unanswered (it waits in the contact's mailbox; the contact asks us when it comes back).
+    Reach,
+    /// The slow safety refresh: not while an earlier list is unanswered.
+    Refresh,
+}
+
+/// presence.json: contact -> (its mailbox id, the roster it last got from us). A restart then pushes only
+/// what changed. A contact that lost our roster asks for it (`list` at its start).
+type Pushed = BTreeMap<String, (String, Vec<(String, String)>)>;
+
+fn mailbox_of(c: &store::Contact) -> Option<String> {
+    crate::crypto::Peer::parse(&c.address).ok().map(|p| p.id())
+}
+
+fn load_pushed() -> HashMap<String, PeerState> {
+    let all = store::contacts();
+    let saved: Pushed = store::read("presence.json");
+    saved
+        .into_iter()
+        .filter(|(n, (id, _))| all.get(n).and_then(mailbox_of).as_ref() == Some(id))
+        .map(|(n, (_, key))| (n, PeerState { pushed: Some(key), ..Default::default() }))
+        .collect()
+}
+
+fn save_pushed(peers: &HashMap<String, PeerState>) {
+    let all = store::contacts();
+    let out: Pushed = peers
+        .iter()
+        .filter_map(|(n, p)| Some((n.clone(), (all.get(n).and_then(mailbox_of)?, p.pushed.clone()?))))
+        .collect();
+    let _ = store::write("presence.json", &out);
+}
+
+fn roster_key(r: &[Agent]) -> Vec<(String, String)> {
+    r.iter().map(|a| (a.name.clone(), a.harness.clone())).collect()
+}
+
 /// Who wants the receipt for a message we sealed.
 enum ReceiptWaiter {
     Intercom { proxy: String, local_from: String, to: String },
@@ -222,6 +336,12 @@ struct Hub {
     system: RwLock<Option<Arc<Proxy>>>,
     intercom_in: Mutex<Option<mpsc::UnboundedSender<Local>>>,
     arrived: Notify,
+    /// contact -> what we know about talking with it (presence and roster requests)
+    peers: Mutex<HashMap<String, PeerState>>,
+    /// contact -> ts of the roster we keep (an older one that arrives late is ignored)
+    roster_ts: Mutex<HashMap<String, i64>>,
+    /// contact -> address, as this daemon last saw it (a new entry on reload is a new contact)
+    known: Mutex<HashMap<String, String>>,
 }
 
 /// An agent's address: `<machine>/<agent>`. (`@` is reserved by pi-intercom for its own routing.)
@@ -417,7 +537,47 @@ impl Hub {
 
     /// Seal and send one message; returns its id.
     async fn seal_send(&self, contact: &str, kind: &str, body: &str, reply_to: Option<String>, from: Option<String>, to: Option<String>) -> Result<String> {
-        compose_and_send(&self.me, contact, kind, body, reply_to, from, to).await
+        let id = compose_and_send(&self.me, contact, kind, body, reply_to, from, to).await?;
+        let mut peers = self.peers.lock().unwrap();
+        let p = peers.entry(contact.to_string()).or_default();
+        p.sent = now_ms();
+        if kind == "list" {
+            p.listed = p.sent;
+        }
+        Ok(id)
+    }
+
+    /// A verified envelope from this contact, written at `ts` (its clock): it was online then, so presence
+    /// pushes to it resume. An envelope that waited in our mailbox counts from when it was written.
+    fn heard(&self, contact: &str, ts: i64) {
+        let mut peers = self.peers.lock().unwrap();
+        let p = peers.entry(contact.to_string()).or_default();
+        p.got = now_ms();
+        p.heard = p.heard.max(ts.min(p.got));
+        p.held = p.held && p.silent(now_ms());
+    }
+
+    /// Send our roster (already filtered for this contact). It is marked as sent before it goes, so a
+    /// presence check running at the same time does not send it again; a failure clears the mark.
+    async fn send_roster(&self, contact: &str, roster: &[Agent], reply_to: Option<String>) -> Result<String> {
+        self.mark_pushed(contact, Some(roster_key(roster)));
+        let body = serde_json::to_string(roster).unwrap_or_default();
+        let sent = self.seal_send(contact, "roster", &body, reply_to, None, None).await;
+        if sent.is_err() {
+            self.mark_pushed(contact, None);
+        }
+        sent
+    }
+
+    fn mark_pushed(&self, contact: &str, key: Option<Vec<(String, String)>>) {
+        let mut peers = self.peers.lock().unwrap();
+        let p = peers.entry(contact.to_string()).or_default();
+        let changed = p.pushed != key;
+        p.pushed = key;
+        p.pushed_at = now_ms();
+        if changed {
+            save_pushed(&peers);
+        }
     }
 
     /// Tell the sender what happened to its message. Never for receipts, rosters or hellos.
@@ -462,6 +622,9 @@ pub async fn run(me: Identity, notify: Option<String>) -> Result<()> {
         system: RwLock::default(),
         intercom_in: Mutex::default(),
         arrived: Notify::new(),
+        peers: Mutex::new(load_pushed()),
+        roster_ts: Mutex::default(),
+        known: Mutex::new(store::contacts().into_iter().map(|(n, c)| (n, c.address)).collect()),
     });
     log(format!("socket {} ready; contact requests -> {}", sock.display(), hub.notify.as_deref().unwrap_or(MACHINE_INBOX)));
 
@@ -692,55 +855,129 @@ async fn redeliver_loop(hub: Arc<Hub>) {
 // ---------- rosters and presence ----------
 
 /// Give contacts without a drop code their own and update the relay's table (drops.rs). `force`: send the
-/// table even if our last update matches (at start: the relay may have erased an idle mailbox).
-async fn refresh_drops(force: bool) {
+/// table even if our last update matches (at start: the relay may have erased an idle mailbox). Returns the
+/// contacts that got a new code the relay now holds: each needs a message to carry it (a `list`).
+async fn refresh_drops(force: bool) -> Vec<String> {
+    let before: HashSet<String> = store::contacts().into_iter().filter(|(_, c)| c.our_drop.is_none()).map(|(n, _)| n).collect();
     drops::issue_missing();
     match drops::sync(force).await {
-        Ok(true) => log("drop codes: relay table updated"),
-        Ok(false) => {}
-        Err(e) => log(format!("drop codes: relay update failed: {e}")),
+        Ok(changed) => {
+            if changed {
+                log("drop codes: relay table updated");
+            }
+            store::contacts().into_iter().filter(|(n, c)| before.contains(n) && c.our_drop.is_some()).map(|(n, _)| n).collect()
+        }
+        Err(e) => {
+            log(format!("drop codes: relay update failed: {e}"));
+            vec![]
+        }
     }
 }
 
-/// Update drop codes, then ask every contact who is online (the asks carry new codes), now and every 10 minutes.
+/// Update drop codes and ask every contact who is online: at start, then every ROSTER_REFRESH (with jitter)
+/// as a safety net. Rosters normally move by events: a `list` when the relay is reached again or a contact or
+/// code is new, and presence pushes on change.
 async fn roster_loop(hub: Arc<Hub>) {
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let mut force = true;
+    let mut start = true;
     loop {
-        refresh_drops(std::mem::take(&mut force)).await;
-        for contact in store::contacts().keys() {
-            let _ = request_roster(&hub, contact).await;
+        // At start: send the table even if it looks current (the relay may have erased an idle mailbox).
+        for c in refresh_drops(start).await {
+            let _ = request_roster(&hub, &c, Why::Now).await;
         }
-        tokio::time::sleep(ROSTER_REFRESH).await;
+        // At start the relay login may have asked already (Reach skips a contact asked a moment ago).
+        list_all(&hub, if start { Why::Reach } else { Why::Refresh }, if start { "start" } else { "safety refresh" }).await;
+        start = false;
+        let jitter = 0.9 + 0.2 * rand::random::<f64>();
+        tokio::time::sleep(timing(ROSTER_REFRESH).mul_f64(jitter)).await;
     }
 }
 
-async fn request_roster(hub: &Hub, contact: &str) -> Result<String> {
-    hub.seal_send(contact, "list", "", None, None, None).await
+/// Ask every contact for its roster, within the limits of `why`.
+async fn list_all(hub: &Hub, why: Why, what: &str) {
+    let mut n = 0;
+    for contact in store::contacts().keys() {
+        if matches!(request_roster(hub, contact, why).await, Ok(Some(_))) {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        log(format!("roster: asked {n} contact(s) ({what})"));
+    }
 }
 
-/// Push our roster to contacts allowed to list us: on the first check after start and whenever the set
-/// of local agents changes.
+/// Send `contact` a `list` unless `why` says it is not needed now. Ok(None): skipped.
+async fn request_roster(hub: &Hub, contact: &str, why: Why) -> Result<Option<String>> {
+    if hub.peers.lock().unwrap().get(contact).is_some_and(|p| !p.list_due(why, now_ms())) {
+        return Ok(None);
+    }
+    hub.seal_send(contact, "list", "", None, None, None).await.map(Some)
+}
+
+/// Push our roster to contacts allowed to list us when what they last got from us differs. Per contact: at
+/// most one push per PRESENCE_GAP (the last state wins), and a contact silent for SILENT gets one push, then
+/// nothing until it writes again.
 async fn presence_loop(hub: Arc<Hub>) {
-    let mut last: Option<Vec<(String, String)>> = None;
     loop {
-        tokio::time::sleep(PRESENCE_CHECK).await;
+        tokio::time::sleep(timing(PRESENCE_CHECK)).await;
         let roster = hub.local_roster().await;
-        let key: Vec<(String, String)> = roster.iter().map(|a| (a.name.clone(), a.harness.clone())).collect();
-        if last.as_ref() == Some(&key) {
-            continue;
-        }
-        last = Some(key);
         let all = store::contacts();
+        let mut pushed = vec![];
         for (name, c) in &all {
-            if store::may_see_roster(c) {
-                let body = serde_json::to_string(&roster_for(&roster, name, &all)).unwrap_or_default();
-                if let Err(e) = hub.seal_send(name, "roster", &body, None, None, None).await {
+            if !store::may_see_roster(c) {
+                continue;
+            }
+            let theirs = roster_for(&roster, name, &all);
+            let due = {
+                let mut peers = hub.peers.lock().unwrap();
+                let p = peers.entry(name.clone()).or_default();
+                let due = p.push_due(&roster_key(&theirs), now_ms());
+                // A silent contact gets this one push; the next ones wait until it writes.
+                p.held |= due == Some(true);
+                due
+            };
+            let Some(silent) = due else { continue };
+            match hub.send_roster(name, &theirs, None).await {
+                Ok(_) => {
+                    pushed.push(name.clone());
+                    if silent {
+                        log(format!("presence: {name} is silent; it got this roster, the next ones wait until it writes"));
+                    }
+                }
+                Err(e) => {
+                    hub.peers.lock().unwrap().entry(name.clone()).or_default().held = false;
                     log(format!("presence -> {name} failed: {e}"));
                 }
             }
         }
-        log(format!("presence: pushed {} agents", roster.len()));
+        if !pushed.is_empty() {
+            log(format!("presence: pushed {} agents to {}", roster.len(), pushed.join(", ")));
+        }
+    }
+}
+
+/// An unsolicited roster from `contact`: if we have sent it nothing for a while, it may count us as silent
+/// and hold its next pushes, so answer with our roster (or a `list` if it may not see ours).
+async fn echo_presence(hub: &Hub, contact: &str) {
+    // Decide and mark under one lock: rosters that came together (from the mailbox) get one answer.
+    {
+        let mut peers = hub.peers.lock().unwrap();
+        let p = peers.entry(contact.to_string()).or_default();
+        if now_ms() - p.sent <= ms(SILENT) / 2 {
+            return;
+        }
+        p.sent = now_ms();
+    }
+    let all = store::contacts();
+    let Some(c) = all.get(contact) else { return };
+    if store::may_see_roster(c) {
+        let theirs = roster_for(&hub.local_roster().await, contact, &all);
+        match hub.send_roster(contact, &theirs, None).await {
+            Ok(_) => log(format!("presence: {contact} wrote after a quiet spell; sent our roster back")),
+            Err(e) => log(format!("presence -> {contact} failed: {e}")),
+        }
+    } else {
+        let _ = request_roster(hub, contact, Why::Reach).await;
     }
 }
 
@@ -749,6 +986,11 @@ async fn presence_loop(hub: Arc<Hub>) {
 async fn relay_inbox(hub: Arc<Hub>) {
     let mut seen: Seen = store::read("seen.json");
     let me = hub.me.clone();
+    let reached = hub.clone();
+    let on_reach = move || {
+        let hub = reached.clone();
+        tokio::spawn(async move { list_all(&hub, Why::Reach, "relay reached").await });
+    };
     relay::live(&me, |env| {
         let hub = hub.clone();
         let fresh = match open(&hub.me, &env) {
@@ -772,7 +1014,7 @@ async fn relay_inbox(hub: Arc<Hub>) {
                 tokio::spawn(async move { inbound(hub, inner, sender).await });
             }
         }
-    })
+    }, on_reach)
     .await
 }
 
@@ -780,6 +1022,7 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     let from_agent = inner.from_agent.clone().unwrap_or_else(|| "agent".into());
     // Drop codes first, for any kind from a known contact: its answer below already carries our confirmation.
     if let Ok((contact, _)) = store::contact_of(&sender) {
+        hub.heard(&contact, inner.ts);
         let learned = drops::learn(&sender, &inner);
         if learned.rotated {
             log("drop codes: every contact has its own code; replaced the shared code");
@@ -787,7 +1030,7 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
         }
         // A new code from a message we do not answer: confirm it with a list (answered with a roster).
         if learned.new_code && !matches!(inner.kind.as_str(), "list" | "send" | "ask") {
-            let _ = request_roster(&hub, &contact).await;
+            let _ = request_roster(&hub, &contact, Why::Now).await;
         }
     }
     match inner.kind.as_str() {
@@ -856,8 +1099,7 @@ async fn inbound(hub: Arc<Hub>, inner: Inner, sender: Peer) {
     match inner.kind.as_str() {
         "list" => {
             let roster = roster_for(&hub.local_roster().await, &contact, &store::contacts());
-            let body = serde_json::to_string(&roster).unwrap_or_default();
-            match hub.seal_send(&contact, "roster", &body, Some(inner.id.clone()), None, None).await {
+            match hub.send_roster(&contact, &roster, Some(inner.id.clone())).await {
                 Ok(_) => log(format!("roster -> {contact} ({} agents)", roster.len())),
                 Err(e) => log(format!("roster -> {contact} failed: {e}")),
             }
@@ -997,6 +1239,23 @@ async fn on_receipt(hub: &Hub, contact: &str, inner: Inner) {
 }
 
 async fn on_roster(hub: &Arc<Hub>, contact: &str, inner: Inner) {
+    if inner.reply_to.is_none() {
+        // A little later: rosters that waited in the mailbox come just before the relay login is ready, and
+        // the `list` that login sends already tells the contact we are here.
+        let (hub, contact) = (hub.clone(), contact.to_string());
+        tokio::spawn(async move {
+            tokio::time::sleep(ECHO_DELAY).await;
+            echo_presence(&hub, &contact).await;
+        });
+    }
+    // Rosters can arrive out of order (one waited in the mailbox): keep the newest.
+    {
+        let mut ts = hub.roster_ts.lock().unwrap();
+        if ts.get(contact).is_some_and(|t| *t > inner.ts) {
+            return log(format!("roster from {contact}: older than the one we have; ignored"));
+        }
+        ts.insert(contact.to_string(), inner.ts);
+    }
     let agents: Vec<Agent> = serde_json::from_str(&inner.body).unwrap_or_default();
     let clean = |s: &str| s.chars().filter(|c| !c.is_control()).take(80).collect::<String>();
     let agents: Vec<Agent> = agents
@@ -1031,8 +1290,9 @@ async fn hello(hub: &Arc<Hub>, inner: Inner, sender: Peer) {
                 }
                 // Its invite's drop code is now its own: no expiry at the relay any more.
                 refresh_drops(false).await;
+                hub.known.lock().unwrap().insert(name.clone(), store::contacts().get(&name).map(|c| c.address.clone()).unwrap_or_default());
                 connect_contact(hub, &name).await;
-                let _ = request_roster(hub, &name).await;
+                let _ = request_roster(hub, &name, Why::Now).await;
                 let bound = bound.map(|a| format!(" It reaches only {a}, and {a} writes only to it.")).unwrap_or_default();
                 format!("[letagents] added contact {name} (safety number {}): it used your invite code.{bound} Remove it with: letagents contact rm {name}", sender.safety_number())
             }
@@ -1190,7 +1450,7 @@ async fn directory(hub: &Hub, only: Option<&str>, wait: Duration) -> Value {
     let mut pending = vec![];
     for c in &contacts {
         let (tx, rx) = oneshot::channel();
-        if let Ok(id) = request_roster(hub, c).await {
+        if let Ok(Some(id)) = request_roster(hub, c, Why::Now).await {
             hub.list_waiters.lock().unwrap().insert(id, tx);
             pending.push(rx);
         }
@@ -1268,12 +1528,24 @@ async fn handle(hub: &Hub, r: Req) -> Result<Value> {
         "reload" => {
             // Contacts added by the CLI (join, contact add/accept): give them drop codes, make them intercom
             // sessions, ask who is online. A removal: the relay drops its code.
-            refresh_drops(false).await;
-            for name in store::contacts().keys() {
+            let mut ask: HashSet<String> = refresh_drops(false).await.into_iter().collect();
+            let all = store::contacts();
+            {
+                let mut known = hub.known.lock().unwrap();
+                known.retain(|n, _| all.contains_key(n));
+                for (name, c) in &all {
+                    if known.insert(name.clone(), c.address.clone()).as_ref() != Some(&c.address) {
+                        ask.insert(name.clone());
+                    }
+                }
+            }
+            for name in all.keys() {
                 if hub.proxy(name).is_none() {
                     connect_contact(hub, name).await;
-                    let _ = request_roster(hub, name).await;
                 }
+            }
+            for name in ask {
+                let _ = request_roster(hub, &name, Why::Now).await;
             }
             Ok(json!({ "ok": true }))
         }
@@ -1474,6 +1746,39 @@ mod tests {
         assert_eq!(render(&msg("x/alice", "send"), "laptop", Some("external engineer")), "[letagents · verified x/alice · note: external engineer]\n\nbody");
         assert_eq!(render(&msg("x/alice", "ask"), "laptop", Some("n")), "[letagents · verified x/alice · note: n] ASK id1\n\nbody");
         assert_eq!(render(&msg("laptop/tester", "send"), "laptop", Some("n")), "[letagents · laptop/tester]\n\nbody");
+    }
+
+    #[test]
+    fn presence_skips_silent_contacts_and_coalesces() {
+        let key = |n: &str| vec![(n.to_string(), "pi".to_string())];
+        let now = 10 * ms(SILENT);
+        // Never heard: one push, then hold until it writes.
+        let mut p = PeerState::default();
+        assert_eq!(p.push_due(&key("a"), now), Some(true));
+        p.pushed = Some(key("a"));
+        p.pushed_at = now;
+        p.held = true;
+        assert_eq!(p.push_due(&key("b"), now + ms(PRESENCE_GAP) * 5), None, "silent and held");
+        // It wrote: pushes resume, at most one per PRESENCE_GAP, last state wins.
+        p.heard = now + 1000;
+        p.held = false;
+        assert_eq!(p.push_due(&key("b"), now + 2000), None, "within the gap");
+        assert_eq!(p.push_due(&key("b"), now + ms(PRESENCE_GAP)), Some(false));
+        assert_eq!(p.push_due(&key("a"), now + ms(PRESENCE_GAP)), None, "unchanged");
+    }
+
+    #[test]
+    fn lists_are_bounded_unless_needed() {
+        let now = crate::crypto::MAX_AGE_MS;
+        let mut p = PeerState::default();
+        assert!(p.list_due(Why::Reach, now) && p.list_due(Why::Refresh, now));
+        p.listed = now; // sent, not answered
+        assert!(!p.list_due(Why::Reach, now + ms(REACH_LIST_GAP)) && !p.list_due(Why::Refresh, now + 3_600_000));
+        assert!(p.list_due(Why::Now, now), "a new contact or code always gets one");
+        p.got = now + 10; // answered
+        assert!(!p.list_due(Why::Reach, now + 20), "asked a moment ago");
+        assert!(p.list_due(Why::Reach, now + ms(REACH_LIST_GAP)) && p.list_due(Why::Refresh, now + 20));
+        assert!(p.list_due(Why::Refresh, now + crate::crypto::MAX_AGE_MS + 1), "the old list left the mailbox");
     }
 
     fn bound(all: &mut store::Contacts, name: &str, agent: &str, exclusive: bool) {

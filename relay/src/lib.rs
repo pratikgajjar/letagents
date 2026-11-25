@@ -433,7 +433,8 @@ impl Mailbox {
             let _ = ws.send_with_str(&frame);
         }
         self.schedule_cleanup().await?;
-        self.report(vec!["sent=1".into()]).await?;
+        self.count_sent()?;
+        self.report(vec![], false).await?;
         json(202, serde_json::json!({ "ok": true, "seq": seq.seq }))
     }
 
@@ -470,12 +471,12 @@ impl Mailbox {
                     msgs.push(serde_json::json!({ "seq": seq, "ct": B64.encode(ct) }));
                 }
             }
-            self.report(counted).await?;
+            self.report(counted, false).await?;
             return json(200, serde_json::json!({ "msgs": msgs, "drops": self.live_drops()? }));
         }
         let pair = WebSocketPair::new()?;
         self.state.accept_websocket_with_tags(&pair.server, &["owner"]);
-        self.report(counted).await?;
+        self.report(counted, false).await?;
         for row in self.sql().exec("SELECT seq, ct FROM msgs ORDER BY seq", None)?.raw() {
             if let [SqlStorageValue::Integer(seq), SqlStorageValue::Blob(ct)] = row?.as_slice() {
                 pair.server.send_with_str(serde_json::json!({ "t": "msg", "seq": seq, "ct": B64.encode(ct) }).to_string())?;
@@ -545,6 +546,7 @@ impl Mailbox {
             self.sql().exec("INSERT OR REPLACE INTO drops (h, exp) VALUES (?, ?)", vec![d.h.clone().into(), d.exp.into()])?;
         }
         self.schedule_cleanup().await?;
+        self.report(vec![], false).await?;
         json(200, serde_json::json!({ "ok": true, "drops": self.live_drops()? }))
     }
 
@@ -574,6 +576,7 @@ impl Mailbox {
             n += 1;
         }
         self.set_meta("last_seen", &now_ms().to_string())?;
+        self.report(vec![], false).await?;
         json(200, serde_json::json!({ "ok": true, "acked": n }))
     }
 }
@@ -593,6 +596,7 @@ impl DurableObject for Mailbox {
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         let path = req.url()?.path().to_string();
+        count_do(&self.env, "mailbox fetch");
         let id = path.rsplit('/').next().unwrap_or_default().to_string();
         if path.starts_with("/v1/send/") {
             self.send(req).await
@@ -606,6 +610,7 @@ impl DurableObject for Mailbox {
     }
 
     async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+        count_do(&self.env, "mailbox ws_message");
         let WebSocketIncomingMessage::String(text) = message else { return Ok(()) };
         if text.len() > 256 {
             return Ok(());
@@ -614,6 +619,7 @@ impl DurableObject for Mailbox {
         match (f.t.as_str(), f.seq) {
             ("ack", Some(seq)) => {
                 self.sql().exec("DELETE FROM msgs WHERE seq = ?", vec![seq.into()])?;
+                self.report(vec![], false).await?;
             }
             ("ping", _) => ws.send_with_str(r#"{"t":"pong"}"#)?,
             _ => {}
@@ -622,18 +628,21 @@ impl DurableObject for Mailbox {
     }
 
     async fn websocket_close(&self, ws: WebSocket, code: usize, _reason: String, _clean: bool) -> Result<()> {
+        count_do(&self.env, "mailbox ws_close");
         self.set_meta("last_seen", &now_ms().to_string())?;
         let code = if code == 1005 || code == 1006 { 1000 } else { code as u16 };
         let _ = ws.close(Some(code), Some("bye"));
-        self.report(vec![]).await
+        self.report(vec![], true).await
     }
 
     async fn websocket_error(&self, _ws: WebSocket, _error: Error) -> Result<()> {
-        self.report(vec![]).await
+        count_do(&self.env, "mailbox ws_error");
+        self.report(vec![], true).await
     }
 
     async fn alarm(&self) -> Result<Response> {
-        self.report(vec![]).await?;
+        count_do(&self.env, "mailbox alarm");
+        self.report(vec![], true).await?;
         let now = now_ms();
         self.sql().exec("DELETE FROM msgs WHERE ts < ?", vec![(now - TTL_MS).into()])?;
         self.sql().exec("DELETE FROM drops WHERE exp > 0 AND exp < ?", vec![now.into()])?;
@@ -685,6 +694,28 @@ impl Mailbox {
 
 const LIVE_LEASE_H: i64 = 24;
 const KEEP_HOURS: i64 = 720; // 30 days of hourly rows in the Stats object
+/// Envelope counts wait in the mailbox (`sent_p` in meta: `<hour>:<n>` pairs) and go to Stats at most this
+/// often, with an event the mailbox handles anyway (send, login, ack, drops), and always on close, error and
+/// alarm. No timer wakes a mailbox for the counters. Tests may shorten it with the STATS_FLUSH_MS var.
+const STATS_FLUSH_MS: i64 = 10 * 60 * 1000;
+/// At most this many hours wait in `sent_p`; one more flushes them at once.
+const MAX_PENDING_HOURS: usize = 48;
+
+/// Test-only count of Durable Object requests (tests/cost.sh): one log line per request when LA_COUNT_DO=1.
+fn count_do(env: &Env, what: &str) {
+    if env.var("LA_COUNT_DO").map(|v| v.to_string()).unwrap_or_default() == "1" {
+        console_log!("la-do {what}");
+    }
+}
+
+/// `<hour>:<n>,<hour>:<n>` (hour ascending) to pairs; bad entries are dropped.
+fn parse_pending(s: &str) -> Vec<(i64, i64)> {
+    s.split(',').filter_map(|p| p.split_once(':')).filter_map(|(h, n)| Some((h.parse().ok()?, n.parse().ok()?))).filter(|(_, n): &(i64, i64)| *n > 0).collect()
+}
+
+fn fmt_pending(p: &[(i64, i64)]) -> String {
+    p.iter().map(|(h, n)| format!("{h}:{n}")).collect::<Vec<_>>().join(",")
+}
 
 fn hour_now() -> i64 {
     now_ms() / 3_600_000
@@ -706,9 +737,21 @@ impl Mailbox {
         Ok(vec!["new=1".into()])
     }
 
-    /// One call to the Stats object with `q` plus this mailbox's live state, only if there is something to say.
-    /// Stats gets increments and hour numbers, never an id.
-    async fn report(&self, mut q: Vec<String>) -> Result<()> {
+    /// One more accepted envelope, counted in the hour it came. Stats hears of it with the next flush.
+    fn count_sent(&self) -> Result<()> {
+        let h = hour_now();
+        let mut p = parse_pending(&self.meta("sent_p")?.unwrap_or_default());
+        match p.last_mut() {
+            Some((last, n)) if *last == h => *n += 1,
+            _ => p.push((h, 1)),
+        }
+        self.set_meta("sent_p", &fmt_pending(&p))
+    }
+
+    /// One call to the Stats object with `q` plus this mailbox's live state and, when due, its waiting envelope
+    /// counts (per hour, `sent_h=<hour>:<n>`), only if there is something to say. `force`: send the counts now
+    /// (close, error, alarm). Stats gets increments and hour numbers, never an id.
+    async fn report(&self, mut q: Vec<String>, force: bool) -> Result<()> {
         let h = hour_now();
         let cur: Option<i64> = self.meta("live_h")?.and_then(|v| v.parse().ok());
         let counted = cur.filter(|c| *c >= h - LIVE_LEASE_H);
@@ -722,7 +765,18 @@ impl Mailbox {
             q.extend(counted.map(|c| format!("off={c}")));
             self.sql().exec("DELETE FROM meta WHERE k = 'live_h'", None)?;
         }
+        let pending = parse_pending(&self.meta("sent_p")?.unwrap_or_default());
+        if !pending.is_empty() {
+            let flush_ms = self.env.var("STATS_FLUSH_MS").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(STATS_FLUSH_MS);
+            let last: i64 = self.meta("stats_at")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            // Stats is called anyway (q), or the counts are due: they go along.
+            if force || !q.is_empty() || now_ms() - last >= flush_ms || pending.len() > MAX_PENDING_HOURS {
+                q.extend(pending.iter().map(|(h, n)| format!("sent_h={h}:{n}")));
+                self.sql().exec("DELETE FROM meta WHERE k = 'sent_p'", None)?;
+            }
+        }
         if !q.is_empty() {
+            self.set_meta("stats_at", &now_ms().to_string())?;
             bump_stat(&self.env, &q.join("&")).await;
         }
         Ok(())
@@ -822,6 +876,7 @@ fn iso_day(d: i64) -> String {
 #[durable_object]
 pub struct Stats {
     state: State,
+    env: Env,
 }
 
 impl Stats {
@@ -837,17 +892,18 @@ impl Stats {
 }
 
 impl DurableObject for Stats {
-    fn new(state: State, _env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         let sql = state.storage().sql();
         let _ = sql.exec("DROP TABLE IF EXISTS day", None);
         let _ = sql.exec("DROP TABLE IF EXISTS week", None);
         let _ = sql.exec("CREATE TABLE IF NOT EXISTS hour (h INTEGER PRIMARY KEY, sent INTEGER NOT NULL DEFAULT 0, peak INTEGER NOT NULL DEFAULT 0)", None);
         let _ = sql.exec("CREATE TABLE IF NOT EXISTS live (h INTEGER PRIMARY KEY, n INTEGER NOT NULL)", None);
         let _ = sql.exec("CREATE TABLE IF NOT EXISTS total (k TEXT PRIMARY KEY, v INTEGER NOT NULL)", None);
-        Self { state }
+        Self { state, env }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
+        count_do(&self.env, "stats fetch");
         let url = req.url()?;
         let sql = self.state.storage().sql();
         let h = hour_now();
@@ -872,13 +928,26 @@ impl DurableObject for Stats {
                     sql.exec("INSERT OR IGNORE INTO hour (h, peak) VALUES (?, ?)", vec![gap.into(), before.into()])?;
                 }
             }
-            let sent = i64::from(arg("sent").is_some());
             sql.exec(
-                "INSERT INTO hour (h, sent, peak) VALUES (?, ?, ?) ON CONFLICT(h) DO UPDATE SET sent = sent + excluded.sent, peak = MAX(peak, excluded.peak)",
-                vec![h.into(), sent.into(), before.max(after).into()],
+                "INSERT INTO hour (h, sent, peak) VALUES (?, 0, ?) ON CONFLICT(h) DO UPDATE SET peak = MAX(peak, excluded.peak)",
+                vec![h.into(), before.max(after).into()],
             )?;
-            if sent == 1 {
-                bump("sent")?;
+            // Envelopes per hour, counted by the mailboxes in the hour they came (`sent_h=<hour>:<n>`, sent
+            // late in batches). `sent=1`: one envelope now (relays before the batching).
+            let mut sent: Vec<(i64, i64)> = url.query_pairs().filter(|(k, _)| k == "sent_h").filter_map(|(_, v)| parse_pending(&v).pop()).take(MAX_PENDING_HOURS + 2).collect();
+            if arg("sent").is_some() {
+                sent.push((h, 1));
+            }
+            let mut total = 0;
+            for (at, n) in sent {
+                let (at, n) = (at.min(h), n.min(1_000_000));
+                total += n;
+                if at > h - KEEP_HOURS {
+                    sql.exec("INSERT INTO hour (h, sent, peak) VALUES (?, ?, 0) ON CONFLICT(h) DO UPDATE SET sent = sent + excluded.sent", vec![at.into(), n.into()])?;
+                }
+            }
+            if total > 0 {
+                sql.exec("INSERT INTO total (k, v) VALUES ('sent', ?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v", vec![total.into()])?;
             }
             if arg("new").is_some() {
                 bump("machines")?;
