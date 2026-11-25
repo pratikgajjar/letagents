@@ -1,0 +1,20 @@
+name: prod-watch
+# Every 15 minutes: does letagents.talk still serve the relay API? This catches a bad deploy that did not
+# come through ship.yml (for example a Workers Builds trigger on the wrong branch or root). A failed run
+# emails the repo owner. Read-only: three GETs.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: relay API on the custom domain (two tries, 60 s apart)
+        run: tests/prod-api.sh || { sleep 60; tests/prod-api.sh; }

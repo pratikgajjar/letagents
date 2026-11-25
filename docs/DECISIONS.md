@@ -10,6 +10,10 @@ Each entry: the decision, the reason, and what would change it. Newest first.
 
 **Roll back:** push an older commit to `relay-live` (Cloudflare builds and deploys it), or roll back to an earlier version in the dashboard or with `wrangler rollback` (instant, no build). After a forced push, reset `relay-live` to `main` when `main` is fixed, or `promote` fails as not a fast-forward.
 
+**Incident (2026-11-25):** connecting the repo in the dashboard created a trigger on `main` with root `/` and no build command. Workers Builds then ran its automatic project setup and deployed a static-assets worker to letagents.talk: the cached home page still answered, but every `/v1` path gave 404 for about 14 hours. Fixed by rolling back to the last good version, then setting the trigger to branch `relay-live`, root `/relay`, the Rust build command, and a deploy command that sets `COMMIT` from `git rev-parse HEAD`. `prod-check` did fail (the commit never went live), but only after 20 minutes, and nothing watched production between deploys.
+
+**Guard rails since:** `tests/prod-api.sh` (three GETs: `/health` 200, an unsigned `/v1/inbox` 401, `/stats.json` 200) runs in every `prod-check` poll, so a deploy that drops the API fails at once, and in `prod-watch.yml` every 15 minutes, so a deploy that did not come through `ship.yml` is caught too. A failed run emails the repo owner.
+
 **Revisit when:** Workers Builds is down for long, or the build needs a step it cannot run.
 
 ## 14. Event-driven rosters and batched counters (cost)

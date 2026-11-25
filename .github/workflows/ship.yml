@@ -73,6 +73,7 @@ jobs:
       - name: wait for Cloudflare to serve the tested commit (20 min)
         run: |
           for _ in $(seq 60); do
+            tests/prod-api.sh || exit 1   # a deploy that drops the relay API fails at once, whatever commit it is
             live=$(curl -sS -o /dev/null -D - https://letagents.talk/ | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -n 's/^x-letagents-commit: //p')
             [ "$live" = "$GITHUB_SHA" ] && { echo "live: $live"; exit 0; }
             echo "live: ${live:-none}, want $GITHUB_SHA"
