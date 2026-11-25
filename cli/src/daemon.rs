@@ -299,6 +299,12 @@ fn save_pushed(peers: &HashMap<String, PeerState>) {
     let _ = store::write("presence.json", &out);
 }
 
+/// The relay answered and refused the envelope (full mailbox, revoked code, rate limit), as opposed to
+/// not being reached at all.
+fn refused(e: &anyhow::Error) -> bool {
+    e.to_string().contains("relay refused")
+}
+
 fn roster_key(r: &[Agent]) -> Vec<(String, String)> {
     r.iter().map(|a| (a.name.clone(), a.harness.clone())).collect()
 }
@@ -565,7 +571,9 @@ impl Hub {
         self.mark_pushed(contact, Some(roster_key(roster)));
         let body = serde_json::to_string(roster).unwrap_or_default();
         let sent = self.seal_send(contact, "roster", &body, reply_to, None, None).await;
-        if sent.is_err() {
+        // Not sent (the relay was not reached): try again later. Refused by the relay (its mailbox is full,
+        // or our code was revoked): do not retry; the contact asks with a `list` when it can take mail again.
+        if sent.as_ref().is_err_and(|e| !refused(e)) {
             self.mark_pushed(contact, None);
         }
         sent
@@ -915,7 +923,13 @@ async fn request_roster(hub: &Hub, contact: &str, why: Why) -> Result<Option<Str
     if hub.peers.lock().unwrap().get(contact).is_some_and(|p| !p.list_due(why, now_ms())) {
         return Ok(None);
     }
-    hub.seal_send(contact, "list", "", None, None, None).await.map(Some)
+    let sent = hub.seal_send(contact, "list", "", None, None, None).await.map(Some);
+    // Refused by the relay (a full mailbox): count it as asked, so start, reach and refresh do not knock again
+    // until the contact writes.
+    if sent.as_ref().is_err_and(refused) {
+        hub.peers.lock().unwrap().entry(contact.to_string()).or_default().listed = now_ms();
+    }
+    sent
 }
 
 /// Push our roster to contacts allowed to list us when what they last got from us differs. Per contact: at
@@ -949,7 +963,9 @@ async fn presence_loop(hub: Arc<Hub>) {
                     }
                 }
                 Err(e) => {
-                    hub.peers.lock().unwrap().entry(name.clone()).or_default().held = false;
+                    if !refused(&e) {
+                        hub.peers.lock().unwrap().entry(name.clone()).or_default().held = false;
+                    }
                     log(format!("presence -> {name} failed: {e}"));
                 }
             }
